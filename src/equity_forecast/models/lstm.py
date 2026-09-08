@@ -63,6 +63,10 @@ __all__ = ["LstmForecaster", "chronological_validation_split"]
 LOGGER = logging.getLogger(__name__)
 
 _UNKNOWN_TICKER = 0
+
+# Below this, the training target is effectively constant and standardising by it
+# would amplify floating-point noise into the forecast.
+_MIN_TARGET_STD = 1e-12
 """Embedding row reserved for tickers absent from the training fold."""
 
 _KERAS: Any = None
@@ -265,6 +269,8 @@ class LstmForecaster(BaseForecaster):
         self._pooled_model: Any = None
         self._global_mean: float = 0.0
         self._ticker_means: dict[str, float] = {}
+        self._target_mean: float = 0.0
+        self._target_std: float = 1.0
         self._val_dates: pd.DatetimeIndex = pd.DatetimeIndex([])
         self._fitted = False
 
@@ -295,6 +301,8 @@ class LstmForecaster(BaseForecaster):
         dates = _date_level(x.index)
         target = np.asarray(y.to_numpy(), dtype="float64")
         self._record_training_means(target, tickers)
+        self._record_target_scale(target)
+        scaled_target = (target - self._target_mean) / self._target_std
         self._vocab = {str(t): i + 1 for i, t in enumerate(sorted({str(t) for t in tickers}))}
 
         self._models = {}
@@ -329,9 +337,9 @@ class LstmForecaster(BaseForecaster):
         is_val = np.isin(dates[positions], self._val_dates.to_numpy())
 
         if self.params.pooled:
-            self._fit_pooled(sequences, positions, target, tickers, is_val)
+            self._fit_pooled(sequences, positions, scaled_target, tickers, is_val)
         else:
-            self._fit_per_ticker(sequences, positions, target, tickers, is_val)
+            self._fit_per_ticker(sequences, positions, scaled_target, tickers, is_val)
         return self
 
     def _validate_training_frame(self, x: pd.DataFrame, y: pd.Series) -> None:
@@ -370,6 +378,34 @@ class LstmForecaster(BaseForecaster):
             mask = (tickers == ticker) & finite
             if mask.any():
                 self._ticker_means[str(ticker)] = float(target[mask].mean())
+
+    def _record_target_scale(self, target: npt.NDArray[np.float64]) -> None:
+        """Record the training target's location and scale for standardisation.
+
+        The network is trained on ``(y - mean) / std`` rather than on raw log
+        returns. Raw daily returns have a standard deviation around 0.01, so the
+        MSE surface is almost flat in the units Adam's default step size is
+        tuned for, and training is dominated by whatever offset the network
+        starts with. Standardising puts the target on an O(1) scale where the
+        optimiser behaves, and the prediction is mapped back in
+        :meth:`_fill_predictions`.
+
+        Both statistics come from the training fold only - they are fitted
+        inside :meth:`fit`, which never sees test rows - so this introduces no
+        look-ahead.
+
+        Args:
+            target: Raw training targets.
+        """
+        finite = target[np.isfinite(target)]
+        if finite.size == 0:
+            self._target_mean, self._target_std = 0.0, 1.0
+            return
+        self._target_mean = float(finite.mean())
+        std = float(finite.std(ddof=0))
+        # A degenerate (constant) target would divide by zero; leaving the scale
+        # at 1.0 makes the standardisation a pure shift, which is well defined.
+        self._target_std = std if std > _MIN_TARGET_STD else 1.0
 
     def _fit_pooled(
         self,
@@ -495,10 +531,20 @@ class LstmForecaster(BaseForecaster):
             hidden = keras.layers.Concatenate(name="state_and_ticker")([hidden, embedded])
             inputs.append(tic_input)
 
+        # The head is initialised to ZERO, not Glorot. Daily log returns have a
+        # standard deviation near 0.01, while a Glorot-initialised head fed
+        # tanh-bounded LSTM activations emits values of order 0.1-1 - roughly a
+        # hundred times the target's scale. Gradient descent then spends its
+        # whole budget walking that offset back towards zero, and a short
+        # training run never arrives: the model emits noise far larger than the
+        # quantity it is predicting. Starting at zero means an untrained network
+        # predicts "no edge", which for return forecasting is exactly the
+        # random-walk baseline - the model degrades TO the benchmark rather than
+        # to noise, and only moves away from it if it finds something.
         output = keras.layers.Dense(
             1,
             activation="linear",
-            kernel_initializer=keras.initializers.GlorotUniform(seed=self.seed + 89),
+            kernel_initializer="zeros",
             bias_initializer="zeros",
             name="head",
         )(hidden)
@@ -628,7 +674,7 @@ class LstmForecaster(BaseForecaster):
             raw = self._pooled_model.predict(
                 {"sequence": sequences, "ticker": codes}, batch_size=batch, verbose=0
             )
-            values[positions] = np.asarray(raw, dtype="float64").ravel()
+            values[positions] = self._unscale(np.asarray(raw, dtype="float64").ravel())
             return
 
         labels = tickers[positions]
@@ -637,7 +683,18 @@ class LstmForecaster(BaseForecaster):
             if not mask.any():
                 continue
             raw = model.predict(sequences[mask], batch_size=batch, verbose=0)
-            values[positions[mask]] = np.asarray(raw, dtype="float64").ravel()
+            values[positions[mask]] = self._unscale(np.asarray(raw, dtype="float64").ravel())
+
+    def _unscale(self, raw: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        """Map network output back to raw log-return units.
+
+        Args:
+            raw: Standardised network output.
+
+        Returns:
+            The forecast in the same units as the target.
+        """
+        return raw * self._target_std + self._target_mean
 
     # ------------------------------------------------------------ introspection
 

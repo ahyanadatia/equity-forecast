@@ -74,6 +74,10 @@ BASELINE_LABEL = "ZeroReturn"
 #: Two-sided level at which a Diebold-Mariano p-value is called significant.
 SIGNIFICANCE_LEVEL = 0.05
 
+# Below this average daily turnover a book barely trades, so its return comes from
+# holding a position rather than from acting on a forecast.
+_STATIC_BOOK_TURNOVER = 0.05
+
 #: Ticker label ``pipeline`` uses for rows scored across all tickers at once. Kept as a
 #: literal rather than imported, so that reporting never imports the pipeline.
 POOLED_TICKER = "ALL"
@@ -86,7 +90,7 @@ FIGURE_CAPTIONS: Mapping[str, str] = {
     "cumulative_pnl.png": "Cumulative net P&L",
     "dir_acc_box.png": "Per-fold directional accuracy",
     "rolling_sharpe.png": "Rolling annualised Sharpe (net)",
-    "dm_heatmap.png": "Pairwise Diebold-Mariano p-values",
+    "dm_heatmap.png": "Pairwise Diebold-Mariano p-values (cross-sectional, one obs/day)",
 }
 
 #: Filenames of the figures, in the order they are drawn and embedded.
@@ -248,6 +252,27 @@ def _cell_text(value: object) -> str:
     return str(value).replace("|", "\\|")
 
 
+def _rounded(frame: pd.DataFrame, places: int) -> pd.DataFrame:
+    """Round every float column for display.
+
+    The backtest table holds annualised returns, Sharpe ratios and turnovers that
+    carry no meaning past the fourth decimal; printing them at six significant
+    figures makes the table unreadable and implies a precision the estimates do
+    not have.
+
+    Args:
+        frame: Table to round.
+        places: Decimal places to keep.
+
+    Returns:
+        A copy with float columns rounded; other columns untouched.
+    """
+    out = frame.copy()
+    float_columns = out.select_dtypes(include="number").columns
+    out[float_columns] = out[float_columns].astype("float64").round(places)
+    return out
+
+
 def _markdown_table(frame: pd.DataFrame, *, include_index: bool | None = None) -> str:
     """Render a frame as a GitHub-flavoured markdown table.
 
@@ -363,6 +388,62 @@ def _dm_p_value(artifacts: RunArtifactsLike, model: str) -> float:
     return _cell(_row(summary, model), "dm_p_vs_zero")
 
 
+def _dm_statistic(artifacts: RunArtifactsLike, model: str) -> float:
+    """Return the signed Diebold-Mariano statistic of ``model`` against the baseline.
+
+    The sign carries the entire direction of the result: a **negative** statistic
+    means the model's squared forecast errors are smaller than the baseline's,
+    i.e. the model is better. A p-value on its own says only that the two error
+    series differ, so nothing in this module may describe a model as beating the
+    baseline without consulting this.
+
+    Args:
+        artifacts: The run to read.
+        model: Model name.
+
+    Returns:
+        The signed statistic, or ``NaN`` when the run recorded no test.
+    """
+    summary = _by_model(artifacts.metrics_summary)
+    if summary is None or model not in summary.index:
+        return math.nan
+    return _cell(_row(summary, model), "dm_stat_vs_zero")
+
+
+def _split_by_dm_direction(
+    artifacts: RunArtifactsLike, challengers: list[str]
+) -> tuple[dict[str, float], list[str], list[str]]:
+    """Partition challengers into significantly better and significantly worse.
+
+    Args:
+        artifacts: The run to read.
+        challengers: Model names excluding the baseline.
+
+    Returns:
+        ``(p_values, better, worse)`` where ``p_values`` holds every recorded
+        p-value, and the two lists hold the models that clear
+        :data:`SIGNIFICANCE_LEVEL` with a negative and a positive statistic
+        respectively. A model with a significant p-value but no recorded
+        statistic appears in neither list: the direction is unknown, so no
+        directional claim may be made about it.
+    """
+    p_values = {
+        model: _dm_p_value(artifacts, model)
+        for model in challengers
+        if not _is_missing(_dm_p_value(artifacts, model))
+    }
+    better: list[str] = []
+    worse: list[str] = []
+    for model, p_value in p_values.items():
+        if p_value >= SIGNIFICANCE_LEVEL:
+            continue
+        statistic = _dm_statistic(artifacts, model)
+        if _is_missing(statistic):
+            continue
+        (better if statistic < 0.0 else worse).append(model)
+    return p_values, better, worse
+
+
 def _backtest_stat(artifacts: RunArtifactsLike, model: str, stat: str, kind: str = "net") -> float:
     """Return one backtest statistic for one model.
 
@@ -421,19 +502,30 @@ def _benchmark_series(artifacts: RunArtifactsLike) -> pd.Series[float] | None:
 
 
 def _model_error_series(artifacts: RunArtifactsLike) -> dict[str, npt.NDArray[np.float64]]:
-    """Return each model's forecast errors on the rows every model covers.
+    """Return each model's per-date cross-sectional RMS forecast error.
 
     Errors are ``y_true - forecast`` aligned on ``(date, ticker)`` and restricted
-    to rows where every model has a forecast, so the series are equal-length and
-    directly comparable, as :func:`equity_forecast.metrics.dm_pvalue_matrix`
-    requires.
+    to rows where *every* model has a forecast, so the series are equal-length
+    and directly comparable, as
+    :func:`equity_forecast.metrics.dm_pvalue_matrix` requires.
+
+    They are then collapsed to **one observation per date** by taking the
+    root mean squared error across the cross-section. This matters: handing the
+    DM test every ``(date, ticker)`` cell separately would treat six stocks'
+    same-day errors as six independent observations when they are strongly
+    cross-sectionally correlated, inflating the sample size and manufacturing
+    significance - exactly the design the :mod:`equity_forecast.pipeline`
+    module docstring rejects for the headline test. Squaring this series
+    recovers the equal-weight cross-sectional mean squared error, so the pairwise
+    heatmap and the headline ``DM p vs ZeroReturn`` column are computed on the
+    same footing and cannot disagree.
 
     Args:
         artifacts: The run to read.
 
     Returns:
-        Mapping of model name to a 1-D float array; empty when ``forecasts``
-        lacks the needed columns.
+        Mapping of model name to a 1-D float array with one entry per date;
+        empty when ``forecasts`` lacks the needed columns.
     """
     frame = artifacts.forecasts
     needed = {"model", "forecast", "y_true"}
@@ -447,6 +539,10 @@ def _model_error_series(artifacts: RunArtifactsLike) -> dict[str, npt.NDArray[np
     errors = (truth - forecast).dropna(how="any")
     if errors.empty:
         return {}
+    if "ticker" in keys and "date" in keys:
+        # Every model now covers the identical set of (date, ticker) cells, so
+        # each model's daily mean is taken over the same cross-section.
+        errors = errors.pow(2).groupby(level="date").mean().pow(0.5)
     order = [name for name in _model_names(artifacts) if name in errors.columns]
     return {name: np.asarray(errors[name].to_numpy(), dtype=np.float64) for name in order}
 
@@ -518,13 +614,29 @@ def _finding_fold_counts(artifacts: RunArtifactsLike, challengers: list[str]) ->
     return "Per-fold directional accuracy: " + "; ".join(parts) + "."
 
 
+def _join_names(names: list[str]) -> str:
+    """Join model names into readable English (``"a"``, ``"a and b"``, ``"a, b and c"``)."""
+    if len(names) == 1:
+        return names[0]
+    return f"{', '.join(names[:-1])} and {names[-1]}"
+
+
 def _finding_significance(artifacts: RunArtifactsLike, challengers: list[str]) -> str:
-    """State whether any model's DM p-value against the baseline clears 5%."""
-    p_values = {
-        model: _dm_p_value(artifacts, model)
-        for model in challengers
-        if not _is_missing(_dm_p_value(artifacts, model))
-    }
+    """State which models differ from the baseline, and in which direction.
+
+    A p-value below 5% means the two error series differ - not that the model
+    won. This sentence therefore always reports the sign of the statistic, so a
+    model that is significantly *worse* than the random walk can never be
+    written up as clearing a significance bar.
+
+    Args:
+        artifacts: The run to read.
+        challengers: Model names excluding the baseline.
+
+    Returns:
+        One finding sentence.
+    """
+    p_values, better, worse = _split_by_dm_direction(artifacts, challengers)
     if not p_values:
         return (
             f"No Diebold-Mariano test against the {BASELINE_LABEL} baseline was recorded, so "
@@ -532,18 +644,27 @@ def _finding_significance(artifacts: RunArtifactsLike, challengers: list[str]) -
         )
     listing = ", ".join(f"{model} p={value:.3f}" for model, value in p_values.items())
     best = min(p_values, key=lambda model: p_values[model])
-    significant = [model for model, value in p_values.items() if value < SIGNIFICANCE_LEVEL]
-    if significant:
-        return (
-            f"Diebold-Mariano vs {BASELINE_LABEL} (squared loss): {', '.join(significant)} "
-            f"clear the {SIGNIFICANCE_LEVEL:.0%} level; smallest p={p_values[best]:.3f} ({best}). "
-            f"All p-values: {listing}."
+    lead = f"Diebold-Mariano vs {BASELINE_LABEL} (squared loss): "
+
+    clauses: list[str] = []
+    if better:
+        clauses.append(
+            f"{_join_names(better)} beat the baseline at the {SIGNIFICANCE_LEVEL:.0%} level"
         )
-    return (
-        f"Diebold-Mariano vs {BASELINE_LABEL} (squared loss): no model's forecast errors are "
-        f"distinguishable from the baseline at the {SIGNIFICANCE_LEVEL:.0%} level - the smallest "
-        f"p-value is {p_values[best]:.3f} ({best}). All p-values: {listing}."
-    )
+    if worse:
+        clauses.append(
+            f"{_join_names(worse)} {'is' if len(worse) == 1 else 'are'} significantly WORSE than "
+            f"the baseline - the difference is real, but it runs the wrong way"
+        )
+    if not clauses:
+        return (
+            f"{lead}no model's forecast errors are distinguishable from the baseline at the "
+            f"{SIGNIFICANCE_LEVEL:.0%} level - the smallest p-value is {p_values[best]:.3f} "
+            f"({best}). All p-values: {listing}."
+        )
+    if not better:
+        clauses.append("no model beats it")
+    return f"{lead}{'; '.join(clauses)}. All p-values: {listing}."
 
 
 def _net_sharpes(artifacts: RunArtifactsLike, models: list[str]) -> dict[str, float]:
@@ -603,8 +724,17 @@ def _finding_costs(artifacts: RunArtifactsLike, models: list[str]) -> str:
     if benchmark is not None and not benchmark.empty:
         bh_sharpe = float(summarise_pnl(benchmark, ann_factor=ann_factor)["sharpe"])
         text += f"; buy-and-hold over the same window scores {bh_sharpe:.2f}"
-    verdict = "survives the cost drag" if net_sharpe > 0 else "does not survive the cost drag"
-    return text + f". The signal {verdict}."
+    if net_sharpe <= 0:
+        return text + ". That P&L does not survive the cost drag."
+    text += ". That P&L survives the cost drag"
+    if not _is_missing(turnover) and turnover < _STATIC_BOOK_TURNOVER:
+        # A book that almost never trades is not reacting to a forecast, and
+        # calling its return a "signal" would misdescribe what produced it.
+        text += (
+            f", but at {turnover:.3f} average daily turnover it is close to a static position: "
+            f"it is capturing drift, not reacting to a forecast"
+        )
+    return text + ". Whether any accuracy edge supports it is the bottom line's question."
 
 
 def _finding_ic(artifacts: RunArtifactsLike, challengers: list[str]) -> str:
@@ -634,7 +764,11 @@ def _finding_ic(artifacts: RunArtifactsLike, challengers: list[str]) -> str:
         text += (
             f" The strongest ({best}) has a fold-level t-statistic of {t_stat:.2f} over "
             f"{n_folds} folds (p={p_value:.3f}), i.e. {verdict} at the "
-            f"{SIGNIFICANCE_LEVEL:.0%} level."
+            f"{SIGNIFICANCE_LEVEL:.0%} level. Read that p-value as an order of magnitude, not "
+            f"as inference: walk-forward folds share most of their training data so their ICs "
+            f"are not independent, and this is the best of {len(means)} models, which biases it "
+            f"upward. The Diebold-Mariano tests on the daily series are the significance claims "
+            f"this report stands behind."
         )
     return text
 
@@ -642,50 +776,78 @@ def _finding_ic(artifacts: RunArtifactsLike, challengers: list[str]) -> str:
 def _finding_bottom_line(
     artifacts: RunArtifactsLike, models: list[str], challengers: list[str]
 ) -> str:
-    """Write the plain-language verdict implied by the other findings."""
-    p_values = [_dm_p_value(artifacts, model) for model in challengers]
-    any_significant = any(
-        not _is_missing(value) and value < SIGNIFICANCE_LEVEL for value in p_values
-    )
+    """Write the plain-language verdict implied by the other findings.
+
+    Two guards keep this honest. First, "significant" means significantly
+    *better* - a model whose errors differ from the baseline because it is worse
+    can never contribute to a positive verdict. Second, a claimed edge must come
+    from a **single model**: statistical significance from one model and a
+    positive Sharpe from another are two unrelated facts, and ANDing them into
+    one sentence manufactures a result that no model actually delivered.
+
+    Args:
+        artifacts: The run to read.
+        models: Every model name, baseline included.
+        challengers: Model names excluding the baseline.
+
+    Returns:
+        The bottom-line finding.
+    """
+    p_values, better, worse = _split_by_dm_direction(artifacts, challengers)
     ranked = _best_traded(artifacts, models)
     best_sharpe = math.nan if ranked is None else ranked[1]
+    best_model = None if ranked is None else ranked[0]
     profitable = not _is_missing(best_sharpe) and best_sharpe > 0.0
     cost_bps = float(artifacts.config.backtest.cost_bps)
     sharpe_text = _fmt_float(best_sharpe, 2)
 
-    if ranked is None and not any(not _is_missing(value) for value in p_values):
+    # The edge must belong to one model: significantly better AND profitable.
+    sharpes = _net_sharpes(artifacts, better)
+    vindicated = [model for model, sharpe in sharpes.items() if sharpe > 0.0]
+    worse_note = (
+        f" {_join_names(worse)} {'is' if len(worse) == 1 else 'are'} significantly worse than the "
+        f"baseline."
+        if worse
+        else ""
+    )
+
+    if ranked is None and not p_values:
         return (
             "Bottom line: this run recorded neither a significance test nor a backtest, so it "
             "supports no conclusion either way - the absence of evidence here is a gap in the "
             "run, not a result."
         )
-    if not any_significant and not profitable:
+    if vindicated:
+        winner = max(vindicated, key=lambda model: sharpes[model])
         return (
-            f"Bottom line: nothing here beats the random walk. No model's errors are "
-            f"distinguishable from the {BASELINE_LABEL} baseline, and the best net Sharpe after "
-            f"{cost_bps:.1f} bps of costs is {sharpe_text}. On this sample the honest reading is "
-            f"that daily returns are not forecastable with these features; the null result is "
-            f"the result."
+            f"Bottom line: {winner} both beats the {BASELINE_LABEL} baseline on forecast accuracy "
+            f"at the {SIGNIFICANCE_LEVEL:.0%} level and earns a positive net Sharpe of "
+            f"{_fmt_float(sharpes[winner], 2)} after {cost_bps:.1f} bps of costs. That is a real "
+            f"but small edge on one sample of one universe, and it needs out-of-sample "
+            f"confirmation before it means anything.{worse_note}"
         )
-    if any_significant and profitable:
+    if better:
         return (
-            f"Bottom line: at least one model is statistically distinguishable from the "
-            f"{BASELINE_LABEL} baseline and still earns a positive net Sharpe of {sharpe_text} "
-            f"after {cost_bps:.1f} bps of costs. That is a real but small edge on one sample of "
-            f"one universe, and it needs out-of-sample confirmation before it means anything."
+            f"Bottom line: {_join_names(better)} beat the {BASELINE_LABEL} baseline on forecast "
+            f"accuracy at the {SIGNIFICANCE_LEVEL:.0%} level, but no model that does so survives "
+            f"{cost_bps:.1f} bps of trading costs. A measurable accuracy edge that cannot be "
+            f"traded profitably is not a strategy.{worse_note}"
         )
     if profitable:
+        owner = f" ({best_model})" if best_model else ""
         return (
-            f"Bottom line: the best strategy earns a net Sharpe of {sharpe_text} after "
-            f"{cost_bps:.1f} bps of costs, but no model's forecast errors are distinguishable "
-            f"from the {BASELINE_LABEL} baseline, so the P&L is not supported by a measurable "
-            f"accuracy edge. Treat it as unproven."
+            f"Bottom line: the best strategy{owner} earns a net Sharpe of {sharpe_text} after "
+            f"{cost_bps:.1f} bps of costs, but no model's forecast errors beat the "
+            f"{BASELINE_LABEL} baseline, so that P&L is not supported by a measurable accuracy "
+            f"edge - on this evidence it is drift or luck, not skill. Treat it as "
+            f"unproven.{worse_note}"
         )
     return (
-        f"Bottom line: some forecast errors are statistically distinguishable from the "
-        f"{BASELINE_LABEL} baseline, but no model survives {cost_bps:.1f} bps of trading costs "
-        f"(best net Sharpe {sharpe_text}). A measurable accuracy edge that cannot be traded "
-        f"profitably is not a strategy."
+        f"Bottom line: nothing here beats the random walk. No model's forecast errors are "
+        f"significantly better than the {BASELINE_LABEL} baseline, and the best net Sharpe after "
+        f"{cost_bps:.1f} bps of costs is {sharpe_text}. On this sample the honest reading is that "
+        f"daily returns are not forecastable with these features; the null result is the "
+        f"result.{worse_note}"
     )
 
 
@@ -972,7 +1134,11 @@ def render_summary_markdown(
         f"walk-forward folds. `DM p vs {BASELINE_LABEL}` is the Diebold-Mariano p-value of the "
         f"model's squared forecast errors against the {BASELINE_MODEL} baseline; a value above "
         f"{SIGNIFICANCE_LEVEL:g} means the difference is indistinguishable from noise. Net "
-        "Sharpe, max drawdown and average turnover come from the cost-aware backtest._",
+        "Sharpe, max drawdown and average turnover come from the cost-aware backtest. "
+        f"`{BASELINE_MODEL}` shows DirAcc 0.00 by construction, not because it is "
+        "anti-predictive: it forecasts exactly zero, expressing no direction at all, and an "
+        "exactly-zero forecast is scored as a miss rather than credited with a coin flip. Its "
+        "IC is undefined for the same reason - a constant forecast has no rank correlation._",
         "",
         "## Findings",
         "",
@@ -986,7 +1152,7 @@ def render_summary_markdown(
         "",
         "## Backtest",
         "",
-        _markdown_table(artifacts.backtest_summary),
+        _markdown_table(_rounded(artifacts.backtest_summary, 4)),
         "",
     ]
     if names:
