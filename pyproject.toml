@@ -76,7 +76,6 @@ select = [
 ignore = [
     "D203",    # incompatible with D211
     "D213",    # incompatible with D212
-    "PD901",   # `df` is a fine name for a dataframe
     "PLR0913", # research code legitimately takes many parameters
     "PLR2004", # magic values in numeric code are readable in context
 ]
@@ -113,7 +112,6 @@ module = [
     "matplotlib.*",
     "sklearn.*",
     "scipy.*",
-    "pandas.*",
 ]
 ignore_missing_imports = true
 

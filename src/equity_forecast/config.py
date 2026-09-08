@@ -180,12 +180,13 @@ class Config:
 _TUPLE_FIELDS = {"tickers", "roll_windows", "order"}
 
 
-def _build(cls: type[T], raw: dict[str, Any] | None, path: str) -> T:
+def _build(cls: type[T], raw: object, path: str) -> T:
     """Instantiate a dataclass from a raw mapping, rejecting unknown keys.
 
     Args:
         cls: The dataclass to instantiate.
-        raw: The mapping parsed from YAML, or ``None`` for "use all defaults".
+        raw: The mapping parsed from YAML, or ``None`` for "use all defaults". Typed as
+            ``object`` because YAML can hand back anything at all.
         path: Dotted path of this section, used in error messages.
 
     Returns:
@@ -195,7 +196,8 @@ def _build(cls: type[T], raw: dict[str, Any] | None, path: str) -> T:
         TypeError: If ``raw`` is not a mapping.
         ValueError: If ``raw`` contains keys the dataclass does not define.
     """
-    raw = raw or {}
+    if raw is None:
+        raw = {}
     if not isinstance(raw, dict):
         msg = f"config section {path!r} must be a mapping, got {type(raw).__name__}"
         raise TypeError(msg)

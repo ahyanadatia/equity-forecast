@@ -37,6 +37,7 @@ END = "2017-12-31"
 
 def simulate_prices(
     dates: pd.DatetimeIndex,
+    *,
     seed: int,
     ann_drift: float,
     omega: float,
@@ -99,7 +100,8 @@ def simulate_prices(
         index=dates,
     )
     frame.index.name = "date"
-    return frame.astype({"open": "float64", "high": "float64", "low": "float64", "close": "float64"})
+    floats = {"open": "float64", "high": "float64", "low": "float64", "close": "float64"}
+    return frame.astype(floats)
 
 
 def main() -> None:
@@ -107,7 +109,16 @@ def main() -> None:
     FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
     calendar = pd.bdate_range(START, END, name="date")
     for ticker, seed, drift, omega, alpha, beta, ar1, px0 in SPECS:
-        frame = simulate_prices(calendar, seed, drift, omega, alpha, beta, ar1, px0)
+        frame = simulate_prices(
+            calendar,
+            seed=seed,
+            ann_drift=drift,
+            omega=omega,
+            alpha=alpha,
+            beta=beta,
+            ar1=ar1,
+            start_price=px0,
+        )
         if ticker == "SYNC":
             # SYNC deliberately has holes, so the calendar-alignment and
             # forward-fill logic in data.py has something to chew on.
@@ -115,7 +126,8 @@ def main() -> None:
             frame = frame.drop(index=drop)
         out = FIXTURE_DIR / f"{ticker}.parquet"
         frame.to_parquet(out, engine="pyarrow", compression="snappy")
-        print(f"{ticker}: {len(frame)} rows {frame.index[0].date()} -> {frame.index[-1].date()} -> {out}")
+        span = f"{frame.index[0].date()} -> {frame.index[-1].date()}"
+        print(f"{ticker}: {len(frame)} rows {span} -> {out}")
 
 
 if __name__ == "__main__":

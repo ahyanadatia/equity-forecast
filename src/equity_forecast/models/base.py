@@ -24,19 +24,26 @@ causal model reading row ``t`` is using no future information.
 from __future__ import annotations
 
 import abc
-from typing import Any, Protocol, runtime_checkable
+from collections.abc import Callable
+from typing import Any, Protocol, TypeAlias, runtime_checkable
 
 import pandas as pd
 
 __all__ = [
+    "MODEL_REGISTRY",
     "BaseForecaster",
     "Forecaster",
-    "MODEL_REGISTRY",
+    "ModelParams",
     "available_models",
     "build_model",
     "register_model",
     "returns_from_features",
 ]
+
+# Each model is configured by its own frozen dataclass from `config.py` (or a plain dict for
+# the parameterless baselines). There is no useful common supertype, and the registry has to
+# hold all of them, so the parameter bundle is deliberately dynamic at this boundary.
+ModelParams: TypeAlias = Any
 
 
 @runtime_checkable
@@ -91,7 +98,7 @@ class BaseForecaster(abc.ABC):
 MODEL_REGISTRY: dict[str, type[BaseForecaster]] = {}
 
 
-def register_model(name: str) -> Any:
+def register_model(name: str) -> Callable[[type[BaseForecaster]], type[BaseForecaster]]:
     """Class decorator registering a forecaster under ``name``.
 
     Args:
@@ -117,7 +124,7 @@ def available_models() -> list[str]:
     return sorted(MODEL_REGISTRY)
 
 
-def build_model(name: str, params: Any, seed: int) -> BaseForecaster:
+def build_model(name: str, params: ModelParams, seed: int) -> BaseForecaster:
     """Construct a registered forecaster.
 
     Args:
@@ -161,4 +168,5 @@ def returns_from_features(x: pd.DataFrame) -> pd.DataFrame:
         msg = "returns_from_features requires a 'ret_lag_1' column"
         raise KeyError(msg)
     shifted = x["ret_lag_1"].groupby(level="ticker").shift(-1)
-    return shifted.unstack("ticker").sort_index()
+    # `unstack` is exactly right here: one row per date, one column per ticker, no aggregation.
+    return shifted.unstack("ticker").sort_index()  # noqa: PD010
