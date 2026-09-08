@@ -1,0 +1,132 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "equity-forecast"
+version = "2.0.0"
+description = "Walk-forward comparison of ARIMA, ARIMA-GARCH, Ridge and LSTM for equity return forecasting, with cost-aware backtesting."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Ahyan Adatia" }]
+keywords = ["quantitative-finance", "time-series", "forecasting", "backtesting"]
+
+dependencies = [
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "statsmodels>=0.14",
+    "arch>=7.0",
+    "scikit-learn>=1.5",
+    "yfinance>=0.2.40",
+    "pyyaml>=6.0",
+    "matplotlib>=3.8",
+    "pyarrow>=16",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+lstm = ["tensorflow-cpu>=2.16,<2.21"]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pandas-stubs>=2.2",
+    "types-PyYAML>=6.0",
+]
+
+[project.scripts]
+equity-forecast = "equity_forecast.cli:app"
+
+[project.urls]
+Repository = "https://github.com/ahyanadatia/stockpricepred"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/equity_forecast"]
+
+# --------------------------------------------------------------------------- #
+# ruff
+# --------------------------------------------------------------------------- #
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "A",    # flake8-builtins
+    "C4",   # comprehensions
+    "SIM",  # simplify
+    "RUF",  # ruff-specific
+    "D",    # pydocstyle
+    "ANN",  # annotations
+    "PD",   # pandas-vet
+    "NPY",  # numpy
+    "PL",   # pylint
+    "TID",  # tidy imports
+]
+ignore = [
+    "D203",    # incompatible with D211
+    "D213",    # incompatible with D212
+    "PD901",   # `df` is a fine name for a dataframe
+    "PLR0913", # research code legitimately takes many parameters
+    "PLR2004", # magic values in numeric code are readable in context
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["D100", "D101", "D102", "D103", "D104", "PLR2004", "ANN401"]
+"scripts/*" = ["D103"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# --------------------------------------------------------------------------- #
+# mypy
+# --------------------------------------------------------------------------- #
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+disallow_any_generics = true
+show_error_codes = true
+plugins = []
+exclude = ["^\\.venv/", "^build/"]
+
+[[tool.mypy.overrides]]
+module = [
+    "arch.*",
+    "statsmodels.*",
+    "yfinance.*",
+    "tensorflow.*",
+    "keras.*",
+    "matplotlib.*",
+    "sklearn.*",
+    "scipy.*",
+    "pandas.*",
+]
+ignore_missing_imports = true
+
+# --------------------------------------------------------------------------- #
+# pytest
+# --------------------------------------------------------------------------- #
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+filterwarnings = [
+    "ignore::FutureWarning",
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]
+markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
