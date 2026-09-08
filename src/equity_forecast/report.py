@@ -920,12 +920,22 @@ def _plot_cumulative_pnl(artifacts: RunArtifactsLike, fig: Figure, ax: Axes) -> 
 
 
 def _plot_dir_acc_box(artifacts: RunArtifactsLike, fig: Figure, ax: Axes) -> None:
-    """Box plot of per-fold directional accuracy, with the 0.50 coin-flip line."""
+    """Box plot of per-fold directional accuracy, with the 0.50 coin-flip line.
+
+    The baseline is left out. It forecasts exactly zero, so by the convention in
+    :func:`equity_forecast.metrics.directional_accuracy` it scores 0.00 in every
+    fold - not a direction it got wrong, but no direction at all. Plotting that
+    stretches the axis over [0, 0.6] and squeezes every model that does take a
+    view into the top fifth of the figure, hiding the only thing the reader came
+    to see: whether the boxes straddle 0.50.
+    """
     del fig
     matrix = _fold_metric_matrix(artifacts, "dir_acc")
     data: list[Any] = []
     labels: list[str] = []
     for model in _model_names(artifacts):
+        if model == BASELINE_MODEL:
+            continue
         values = _fold_values(matrix, model)
         if not values.empty:
             data.append(values.to_numpy())
@@ -939,7 +949,9 @@ def _plot_dir_acc_box(artifacts: RunArtifactsLike, fig: Figure, ax: Axes) -> Non
         jitter = rng.uniform(-0.08, 0.08, size=len(values))
         ax.plot(position + jitter, values, "o", markersize=3, alpha=0.5, color="tab:blue")
     ax.axhline(0.5, color="crimson", linestyle="--", linewidth=1.2, label="coin flip (0.50)")
-    ax.set_title("Directional accuracy by walk-forward fold")
+    ax.set_title(
+        f"Directional accuracy by walk-forward fold ({BASELINE_MODEL} omitted: takes no direction)"
+    )
     ax.set_xlabel("Model")
     ax.set_ylabel("Directional accuracy")
     ax.tick_params(axis="x", rotation=30)
@@ -1103,6 +1115,26 @@ def _metadata_table(artifacts: RunArtifactsLike) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["Field", "Value"])
 
 
+def _provenance_banner(artifacts: RunArtifactsLike) -> list[str]:
+    """Render the run's provenance note as a blockquote, if it has one.
+
+    A results file that does not say where its data came from invites the reader
+    to assume it came from the market. When ``report.note`` is set the note is
+    the first thing in the document, above every number.
+
+    Args:
+        artifacts: The finished run.
+
+    Returns:
+        Markdown lines, empty when the config carries no note.
+    """
+    note = artifacts.config.report.note
+    if not note:
+        return []
+    body = " ".join(str(note).split())
+    return [f"> {body}", ""]
+
+
 def render_summary_markdown(
     artifacts: RunArtifactsLike, *, figures: Sequence[str] | None = None
 ) -> str:
@@ -1122,6 +1154,7 @@ def render_summary_markdown(
     lines = [
         f"# equity-forecast run `{artifacts.run_id}`",
         "",
+        *_provenance_banner(artifacts),
         "## Run metadata",
         "",
         _markdown_table(_metadata_table(artifacts), include_index=False),

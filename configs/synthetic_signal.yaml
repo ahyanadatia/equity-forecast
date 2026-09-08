@@ -1,0 +1,91 @@
+# POSITIVE CONTROL: the same simulated universe with a real signal planted in it.
+#
+# Identical to configs/synthetic.yaml except each stock's returns carry an AR(1)
+# term with phi = 0.15 - far stronger than anything daily equity returns show,
+# and deliberately so. A working harness MUST find it.
+#
+# This run is what makes the null result on configs/synthetic.yaml informative:
+# it demonstrates that the walk-forward evaluation, the Diebold-Mariano test and
+# the backtest detect forecastable structure when forecastable structure is
+# present, so their failure to find any elsewhere is a statement about the data
+# and not about the code.
+#
+#   python scripts/make_synthetic_universe.py
+#   equity-forecast run --config configs/synthetic_signal.yaml
+run:
+  seed: 42
+  run_id: "synthetic-signal"
+
+data:
+  tickers: [SIMA, SIMB, SIMC, SIMD, SIME, SIMF]
+  start: "2010-01-01"
+  end: "2026-09-01"
+  cache_dir: "data/synthetic_signal"
+  offline: true           # simulated prices; never touch the network
+  max_missing_frac: 0.02  # drop a ticker missing more than this fraction of the calendar
+  max_ffill_days: 1
+
+features:
+  horizon: 1              # forecast horizon in trading days
+  n_lags: 10
+  roll_windows: [5, 21, 63]
+  drawdown_window: 21
+  rvol_window: 21
+  include_day_of_week: true
+
+splits:
+  mode: expanding         # expanding | rolling
+  initial_train_years: 5
+  test_months: 6
+  rolling_years: 5
+  gap_days: 1             # embargo (trading days) between train end and test start
+
+models:
+  zero_return: {}
+  historical_mean: {}
+  arima:
+    order: [1, 0, 1]
+    auto: false           # true -> small AIC grid over p,q in {0,1,2}
+    max_p: 2
+    max_q: 2
+    trend: "c"
+  arima_garch:
+    mean_lags: 1
+    dist: "t"             # Student-t innovations
+    p: 1                  # GARCH ARCH order
+    q: 1                  # GARCH lag order
+  ridge:
+    alpha: 10.0
+    fit_intercept: true
+  lstm:
+    sequence_length: 20
+    n_layers: 1
+    units: 32
+    dropout: 0.2
+    learning_rate: 0.001
+    epochs: 40
+    batch_size: 128
+    patience: 5
+    val_frac: 0.15
+    pooled: true          # true -> one model across tickers with a ticker embedding
+    embedding_dim: 4
+
+backtest:
+  cost_bps: 5.0
+  threshold: 0.0          # |forecast| below this -> flat
+  vol_target: null        # e.g. 0.10 for 10% annualised vol targeting (needs a vol forecast)
+  vol_scale_cap: 2.0
+  ann_factor: 252
+
+report:
+  output_dir: "results"
+  latest_dir: "results/latest"
+  make_plots: true
+  note: >-
+    POSITIVE CONTROL ON SIMULATED DATA - NOT A MARKET RESULT. Identical to
+    configs/synthetic.yaml except an AR(1) term with phi = 0.15 is planted in each stock's
+    returns - far stronger than anything daily equity returns show, and deliberately so. Any
+    model that reads lagged returns should find it. This run exists to demonstrate that the
+    walk-forward evaluation, the Diebold-Mariano test and the backtest detect forecastable
+    structure when it is there, which is what makes the null result on configs/synthetic.yaml a
+    statement about the data rather than about the code.

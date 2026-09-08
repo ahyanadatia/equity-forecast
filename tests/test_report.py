@@ -749,3 +749,27 @@ def test_dm_heatmap_series_are_one_observation_per_date(artifacts: FakeArtifacts
             f"{name}: {len(values)} observations for {n_dates} dates - "
             "the heatmap is pooling across tickers"
         )
+
+
+def test_directional_accuracy_plot_omits_the_baseline(
+    artifacts: FakeArtifacts, tmp_path: Path
+) -> None:
+    """The baseline's structural 0.00 must not set the axis for everyone else.
+
+    zero_return takes no direction, so it scores 0.00 in every fold. Including it
+    stretches the y-axis over [0, 0.6] and compresses every model that does take
+    a view into the top fifth of the figure, hiding whether the boxes straddle
+    0.50 - which is the entire point of the plot.
+    """
+    fig, ax = plt.subplots()
+    try:
+        report._plot_dir_acc_box(artifacts, fig, ax)
+        labels = [text.get_text() for text in ax.get_xticklabels()]
+        bottom, top = ax.get_ylim()
+    finally:
+        plt.close(fig)
+
+    assert "zero_return" not in labels
+    assert set(labels) == {"ridge", "lstm"}
+    assert bottom > 0.2, "the axis is still being dragged down by a zero-scoring series"
+    assert bottom < 0.5 < top, "the coin-flip line must be visible inside the axis"

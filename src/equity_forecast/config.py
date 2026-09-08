@@ -162,6 +162,13 @@ class ReportConfig:
     output_dir: str = "results"
     latest_dir: str = "results/latest"
     make_plots: bool = True
+    note: str | None = None
+    """Provenance note rendered as a banner at the top of ``summary.md``.
+
+    Use it to record anything a reader needs before they read the numbers -
+    above all, when the prices are not real market data. A results file that
+    does not say where its data came from invites exactly the wrong conclusion.
+    """
 
 
 @dataclass(frozen=True)

@@ -67,5 +67,11 @@ backtest:
 
 report:
   output_dir: "results"
-  latest_dir: "results/latest"
+  # Deliberately NOT results/latest: that directory holds the committed headline
+  # run, and a smoke test must never overwrite the study's published artefacts.
+  latest_dir: "results/smoke-latest"
   make_plots: true
+  note: >-
+    SMOKE RUN on 2 synthetic fixture tickers over 3 years - a pipeline health check, not a
+    study. It exists so `equity-forecast smoke` and CI can verify the whole path end to end
+    with no network. See results/latest/ for the reference run.
