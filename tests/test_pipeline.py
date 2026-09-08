@@ -20,7 +20,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from equity_forecast import cli
+from equity_forecast import cli, pipeline
 from equity_forecast.backtest import SUMMARY_KEYS
 from equity_forecast.cli import app
 from equity_forecast.config import Config, load_config
@@ -475,9 +475,53 @@ def _repo_cwd(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 @pytest.mark.slow
 @pytest.mark.usefixtures("_repo_cwd")
+@pytest.mark.slow
 def test_cli_smoke_runs_every_model_end_to_end(runner: CliRunner, tmp_path: Path) -> None:
     result = runner.invoke(app, ["smoke", "--results-dir", str(tmp_path / "results")])
     assert result.exit_code == 0, result.output
     assert "run smoke" in result.output
     for name in ("zero_return", "arima", "arima_garch", "ridge", "lstm"):
         assert name in result.output
+
+
+# --------------------------------------------------------------------------- #
+# Regression: the paired cross-sectional DM inputs must cover the same tickers.
+# --------------------------------------------------------------------------- #
+def test_paired_cross_sectional_rms_uses_a_common_cross_section() -> None:
+    """A model with a NaN ticker must not be averaged over a smaller universe.
+
+    Diebold-Mariano compares two loss series observation by observation, so each
+    date's two averages have to be taken over the same tickers. If the model
+    leaves ticker B unforecast, averaging each panel over "whatever is finite in
+    that panel" compares a one-stock mean against a two-stock mean, and the
+    differential then reflects cross-sectional composition rather than forecast
+    quality.
+    """
+    dates = pd.bdate_range("2020-01-01", periods=4, name="date")
+    model_panel = pd.DataFrame({"A": [0.01, 0.01, 0.01, 0.01], "B": [np.nan] * 4}, index=dates)
+    base_panel = pd.DataFrame({"A": [0.01, 0.01, 0.01, 0.01], "B": [0.50] * 4}, index=dates)
+
+    model_rms, base_rms = pipeline._paired_cross_sectional_rms(model_panel, base_panel)
+
+    # Ticker B is dropped from BOTH sides, so the two series are identical and
+    # the loss differential is exactly zero - the honest answer, since the model
+    # supplied no forecast for B at all.
+    np.testing.assert_allclose(model_rms, base_rms)
+    np.testing.assert_allclose(model_rms, np.full(4, 0.01))
+
+    # The unpaired computation would have compared 0.01 against ~0.354 and
+    # declared the model a huge winner on the strength of a missing forecast.
+    naive_base = pipeline._cross_sectional_rms(base_panel)
+    assert naive_base[0] > model_rms[0] * 10
+
+
+def test_paired_cross_sectional_rms_keeps_dates_with_no_shared_ticker_as_nan() -> None:
+    dates = pd.bdate_range("2020-01-01", periods=3, name="date")
+    model_panel = pd.DataFrame({"A": [0.01, np.nan, 0.02]}, index=dates)
+    base_panel = pd.DataFrame({"A": [0.03, 0.04, np.nan]}, index=dates)
+
+    model_rms, base_rms = pipeline._paired_cross_sectional_rms(model_panel, base_panel)
+
+    assert np.isfinite(model_rms[0]) and np.isfinite(base_rms[0])
+    assert np.isnan(model_rms[1]) and np.isnan(base_rms[1])
+    assert np.isnan(model_rms[2]) and np.isnan(base_rms[2])

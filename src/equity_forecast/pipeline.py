@@ -516,6 +516,38 @@ def _cross_sectional_rms(panel: pd.DataFrame) -> npt.NDArray[np.float64]:
     return out
 
 
+def _paired_cross_sectional_rms(
+    model_panel: pd.DataFrame, base_panel: pd.DataFrame
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Return per-date RMS errors for two models over an identical cross-section.
+
+    Diebold-Mariano compares two loss series observation by observation, so the
+    two per-date averages have to be taken over the *same* tickers. If a model
+    leaves one ticker's forecasts ``NaN`` - which happens when a fit fails and a
+    fallback cannot be formed - averaging each panel over "whatever is finite in
+    that panel" silently compares a four-stock mean against a six-stock mean.
+    The differential is then contaminated by cross-sectional composition rather
+    than by forecast quality. Masking both panels to the cells finite in *both*
+    keeps the comparison like for like.
+
+    Args:
+        model_panel: Challenger errors as a wide ``date x ticker`` frame.
+        base_panel: Baseline errors over the same dates and tickers.
+
+    Returns:
+        A pair of per-date RMS error arrays, aligned row for row.
+    """
+    aligned_model, aligned_base = model_panel.align(base_panel, join="outer")
+    both_finite = np.isfinite(aligned_model.to_numpy(dtype=np.float64)) & np.isfinite(
+        aligned_base.to_numpy(dtype=np.float64)
+    )
+    mask = pd.DataFrame(both_finite, index=aligned_model.index, columns=aligned_model.columns)
+    return (
+        _cross_sectional_rms(aligned_model.where(mask)),
+        _cross_sectional_rms(aligned_base.where(mask)),
+    )
+
+
 def _dm_row(
     model: str,
     ticker: str,
@@ -604,15 +636,10 @@ def _dm_table(
         # `pivot` is exactly right: one row per date, one column per ticker, no aggregation.
         model_panel = block.pivot(index="date", columns="ticker", values="e_model")  # noqa: PD010
         base_panel = block.pivot(index="date", columns="ticker", values="e_base")  # noqa: PD010
-        rows.append(
-            _dm_row(
-                name,
-                POOLED_TICKER,
-                _cross_sectional_rms(model_panel.sort_index()),
-                _cross_sectional_rms(base_panel.sort_index()),
-                horizon,
-            )
+        model_rms, base_rms = _paired_cross_sectional_rms(
+            model_panel.sort_index(), base_panel.sort_index()
         )
+        rows.append(_dm_row(name, POOLED_TICKER, model_rms, base_rms, horizon))
     return pd.DataFrame(
         rows,
         columns=["model", "ticker", "dm_stat_vs_zero", "dm_p_vs_zero", "dm_n_obs"],

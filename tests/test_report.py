@@ -12,7 +12,7 @@ thing most worth pinning down.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +25,7 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 
+from equity_forecast import report
 from equity_forecast.backtest import SUMMARY_KEYS, BacktestResult
 from equity_forecast.config import (
     BacktestConfig,
@@ -630,3 +631,121 @@ def test_load_run_rejects_a_directory_that_is_not_a_run(tmp_path: Path) -> None:
     empty.mkdir()
     with pytest.raises(FileNotFoundError, match=r"config\.yaml"):
         load_run(empty)
+
+
+# --------------------------------------------------------------------------- #
+# Regression: the direction of a Diebold-Mariano result must never be dropped.
+#
+# A p-value below 5% says the two error series DIFFER. It does not say the model
+# won. These tests pin the two ways the report previously turned a null - or
+# actively bad - result into a win.
+# --------------------------------------------------------------------------- #
+def _with_dm(
+    artifacts: FakeArtifacts,
+    stats: dict[str, float],
+    p_values: dict[str, float],
+    sharpes: dict[str, float] | None = None,
+) -> FakeArtifacts:
+    """Return a copy of ``artifacts`` with the DM columns and Sharpes overridden."""
+    summary = artifacts.metrics_summary.copy()
+    summary["dm_stat_vs_zero"] = summary["model"].map(stats)
+    summary["dm_p_vs_zero"] = summary["model"].map(p_values)
+    backtest = artifacts.backtest_summary.copy()
+    if sharpes is not None:
+        backtest["net_sharpe"] = backtest["model"].map(sharpes)
+    return replace(artifacts, metrics_summary=summary, backtest_summary=backtest)
+
+
+def test_significantly_worse_model_is_never_described_as_clearing_the_level(
+    artifacts: FakeArtifacts,
+) -> None:
+    # lstm is significant (p ~ 0) but its POSITIVE statistic means it is worse
+    # than the baseline, which is exactly the shipped smoke-run situation.
+    worse = _with_dm(
+        artifacts,
+        stats={"zero_return": math.nan, "ridge": 1.02, "lstm": 9.97},
+        p_values={"zero_return": math.nan, "ridge": 0.312, "lstm": 1.8e-21},
+    )
+    findings = " ".join(report.generate_findings(worse))
+
+    assert "WORSE" in findings
+    assert "lstm" in findings
+    for win_phrase in ("lstm clear", "lstm beat", "lstm and", "beats the baseline"):
+        assert win_phrase not in findings, (
+            f"a significantly worse model was written up as {win_phrase!r}"
+        )
+
+
+def test_significance_direction_changes_the_prose(artifacts: FakeArtifacts) -> None:
+    # Identical p-values, opposite statistics, must not produce identical text.
+    p_values = {"zero_return": math.nan, "ridge": 0.312, "lstm": 0.001}
+    better = report.generate_findings(
+        _with_dm(artifacts, {"zero_return": math.nan, "ridge": 1.02, "lstm": -9.97}, p_values)
+    )
+    worse = report.generate_findings(
+        _with_dm(artifacts, {"zero_return": math.nan, "ridge": 1.02, "lstm": 9.97}, p_values)
+    )
+    assert better != worse, "flipping the DM sign left the findings unchanged"
+    assert "WORSE" in " ".join(worse)
+    assert "WORSE" not in " ".join(better)
+
+
+def test_bottom_line_does_not_splice_significance_and_profit_across_models(
+    artifacts: FakeArtifacts,
+) -> None:
+    # ridge is significantly BETTER but loses money; lstm makes money but is not
+    # significant. Neither model delivers an edge, so the bottom line must not
+    # manufacture one by combining them.
+    spliced = _with_dm(
+        artifacts,
+        stats={"zero_return": math.nan, "ridge": -2.60, "lstm": 0.43},
+        p_values={"zero_return": math.nan, "ridge": 0.009, "lstm": 0.674},
+        sharpes={"zero_return": 0.0, "ridge": -0.34, "lstm": 0.91},
+    )
+    bottom = report.generate_findings(spliced)[-1]
+
+    assert "cannot be traded profitably" in bottom
+    assert "0.91" not in bottom, "quoted another model's Sharpe as though it were the edge"
+
+
+def test_bottom_line_claims_an_edge_only_when_one_model_delivers_both(
+    artifacts: FakeArtifacts,
+) -> None:
+    vindicated = _with_dm(
+        artifacts,
+        stats={"zero_return": math.nan, "ridge": -2.60, "lstm": 0.43},
+        p_values={"zero_return": math.nan, "ridge": 0.009, "lstm": 0.674},
+        sharpes={"zero_return": 0.0, "ridge": 0.77, "lstm": -0.51},
+    )
+    bottom = report.generate_findings(vindicated)[-1]
+
+    assert "ridge both beats" in bottom
+    assert "0.77" in bottom
+
+
+def test_profitable_but_insignificant_is_reported_as_unproven(artifacts: FakeArtifacts) -> None:
+    lucky = _with_dm(
+        artifacts,
+        stats={"zero_return": math.nan, "ridge": 1.02, "lstm": 0.43},
+        p_values={"zero_return": math.nan, "ridge": 0.312, "lstm": 0.674},
+        sharpes={"zero_return": 0.0, "ridge": 0.90, "lstm": -0.51},
+    )
+    bottom = report.generate_findings(lucky)[-1]
+
+    assert "not supported by a measurable accuracy edge" in bottom
+    assert "drift or luck, not skill" in bottom
+
+
+def test_dm_heatmap_series_are_one_observation_per_date(artifacts: FakeArtifacts) -> None:
+    # Pooling every (date, ticker) cell would treat correlated same-day errors as
+    # independent and inflate significance; the heatmap must use the same
+    # cross-sectional design as the headline test.
+    series = report._model_error_series(artifacts)
+    n_dates = artifacts.forecasts["date"].nunique()
+
+    assert series, "no error series built"
+    for name, values in series.items():
+        assert len(values) == n_dates, (
+            f"{name}: {len(values)} observations for {n_dates} dates - "
+            "the heatmap is pooling across tickers"
+        )

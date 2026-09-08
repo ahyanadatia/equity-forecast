@@ -121,10 +121,12 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
-addopts = "-q --strict-markers"
+addopts = "-q --strict-markers -m 'not slow'"
 filterwarnings = [
     "ignore::FutureWarning",
     "ignore::DeprecationWarning",
     "ignore::UserWarning",
 ]
-markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
+markers = [
+    "slow: end-to-end runs that duplicate the CI smoke step. Excluded from the default\n    invocation so the developer loop stays under a minute; CI runs them with `-m ''`.",
+]

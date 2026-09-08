@@ -46,8 +46,8 @@ jobs:
       - name: mypy --strict
         run: uv run --no-project mypy --strict src
 
-      - name: pytest
-        run: uv run --no-project pytest -q
+      - name: pytest (including slow end-to-end tests)
+        run: uv run --no-project pytest -q -m ''
 
       - name: smoke run (offline, fixture data)
         run: uv run --no-project equity-forecast smoke

@@ -313,3 +313,58 @@ def test_registry_lookup_builds_the_forecaster() -> None:
     assert isinstance(model, LstmForecaster)
     assert model.name == "lstm"
     assert model.predict_vol(pd.DataFrame()) is None
+
+
+# --------------------------------------------------------------------------- #
+# Regression: the network's output must live on the target's scale.
+#
+# The head used to be Glorot-initialised while the target is a daily log return
+# with a standard deviation near 0.01. An untrained network therefore emitted
+# values ~100x too large, and a short training run never walked that offset
+# back: on the smoke run the LSTM's forecasts had std 0.0594 against a target
+# std of 0.0097 and a maximum of +0.52, making its RMSE six times the
+# random-walk baseline's. These tests pin both halves of the fix.
+# --------------------------------------------------------------------------- #
+def test_untrained_network_predicts_no_edge(window: pd.DataFrame, targets: pd.Series) -> None:
+    """With zero training epochs the model must fall back to ~the training mean.
+
+    The head is zero-initialised precisely so that a network which has learned
+    nothing predicts the random-walk baseline rather than noise. If this fails,
+    the model degrades to garbage instead of to the benchmark.
+    """
+    train = window.index.get_level_values("date") <= window.index.get_level_values("date")[-40]
+    model = LstmForecaster(tiny_config(epochs=1, learning_rate=0.0), seed=3).fit(
+        window[train], targets[train]
+    )
+    predictions = model.predict(window)
+
+    assert np.isfinite(predictions).all()
+    # Every prediction sits at the training mean, i.e. no edge is claimed.
+    np.testing.assert_allclose(predictions.to_numpy(), float(targets[train].mean()), atol=5e-4)
+
+    # The standardisation constants come from the TRAIN fold only - using the
+    # full window's mean and standard deviation would be look-ahead.
+    train_targets = targets[train]
+    assert model._target_mean == pytest.approx(float(train_targets.mean()))
+    assert model._target_std == pytest.approx(float(train_targets.std(ddof=0)))
+    assert model._target_mean != pytest.approx(float(targets.mean()))
+
+
+def test_predictions_are_on_the_scale_of_the_target(
+    window: pd.DataFrame, targets: pd.Series
+) -> None:
+    """Forecast dispersion must not dwarf the quantity being forecast.
+
+    MSE training shrinks predictions TOWARD the conditional mean, so a forecast
+    series with many times the target's dispersion is a broken model, not a
+    confident one. Three times the target's standard deviation is already far
+    more spread than any honest daily-return forecast; the pre-fix model was at
+    six times and would fail this.
+    """
+    train = window.index.get_level_values("date") <= window.index.get_level_values("date")[-40]
+    model = LstmForecaster(tiny_config(epochs=3), seed=5).fit(window[train], targets[train])
+    predictions = model.predict(window)
+
+    target_std = float(targets.std(ddof=1))
+    assert float(predictions.std(ddof=1)) < 3.0 * target_std
+    assert float(predictions.abs().max()) < 10.0 * target_std
