@@ -23,7 +23,9 @@ def set_global_seeds(seed: int) -> None:
     """
     os.environ["PYTHONHASHSEED"] = str(seed)
     random.seed(seed)
-    np.random.seed(seed)
+    # The legacy global NumPy RNG is what scikit-learn, statsmodels and arch reach for
+    # internally, so seeding it is exactly the point - a Generator would not reach them.
+    np.random.seed(seed)  # noqa: NPY002
     set_tensorflow_determinism(seed)
 
 
@@ -41,7 +43,7 @@ def set_tensorflow_determinism(seed: int) -> None:
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
     os.environ.setdefault("TF_DETERMINISTIC_OPS", "1")
     try:
-        import tensorflow as tf
+        import tensorflow as tf  # noqa: PLC0415 - optional dependency, imported lazily
     except ImportError:  # pragma: no cover - exercised only without tensorflow
         return
     tf.keras.utils.set_random_seed(seed)
