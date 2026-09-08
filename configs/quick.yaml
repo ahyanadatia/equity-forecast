@@ -1,0 +1,71 @@
+# Smoke configuration: fully offline, runs against the committed test fixtures.
+# Used by `equity-forecast smoke` and by CI. Must finish in well under 3 minutes.
+run:
+  seed: 42
+  run_id: "smoke"
+
+data:
+  tickers: [SYNA, SYNB]
+  start: "2015-01-01"
+  end: "2017-12-31"
+  cache_dir: "tests/fixtures/prices"
+  offline: true           # never touch the network
+  max_missing_frac: 0.02
+  max_ffill_days: 1
+
+features:
+  horizon: 1
+  n_lags: 5
+  roll_windows: [5, 21]
+  drawdown_window: 21
+  rvol_window: 21
+  include_day_of_week: true
+
+splits:
+  mode: expanding
+  initial_train_years: 1
+  test_months: 6
+  rolling_years: 1
+  gap_days: 1
+
+models:
+  zero_return: {}
+  historical_mean: {}
+  arima:
+    order: [1, 0, 0]
+    auto: false
+    max_p: 1
+    max_q: 1
+    trend: "c"
+  arima_garch:
+    mean_lags: 1
+    dist: "t"
+    p: 1
+    q: 1
+  ridge:
+    alpha: 10.0
+    fit_intercept: true
+  lstm:
+    sequence_length: 10
+    n_layers: 1
+    units: 8
+    dropout: 0.1
+    learning_rate: 0.005
+    epochs: 3
+    batch_size: 64
+    patience: 2
+    val_frac: 0.2
+    pooled: true
+    embedding_dim: 2
+
+backtest:
+  cost_bps: 5.0
+  threshold: 0.0
+  vol_target: null
+  vol_scale_cap: 2.0
+  ann_factor: 252
+
+report:
+  output_dir: "results"
+  latest_dir: "results/latest"
+  make_plots: true

@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONHASHSEED: "42"
+  TF_CPP_MIN_LOG_LEVEL: "3"
+  TF_ENABLE_ONEDNN_OPTS: "0"
+
+jobs:
+  quality:
+    name: lint + types + tests + smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Create venv and install
+        run: |
+          uv venv --python 3.11
+          uv pip install -r requirements.lock
+          uv pip install --no-deps -e .
+
+      - name: ruff check
+        run: uv run --no-project ruff check src tests scripts
+
+      - name: ruff format --check
+        run: uv run --no-project ruff format --check src tests scripts
+
+      - name: mypy --strict
+        run: uv run --no-project mypy --strict src
+
+      - name: pytest
+        run: uv run --no-project pytest -q
+
+      - name: smoke run (offline, fixture data)
+        run: uv run --no-project equity-forecast smoke
+
+      - name: upload smoke artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-results
+          path: results/smoke/
+          if-no-files-found: ignore
