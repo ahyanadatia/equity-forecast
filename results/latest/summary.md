@@ -20,19 +20,19 @@
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | zero_return | 0.01502 ± 0.00480 | 0.0000 ± 0.0000 | n/a | n/a | 0.00 | 0.0000 | 0.000 |
 | historical_mean | 0.01500 ± 0.00481 | 0.5291 ± 0.0215 | 0.0191 ± 0.0436 | 0.169 | 0.84 | 0.4337 | 0.001 |
-| arima | 0.01502 ± 0.00478 | 0.5184 ± 0.0271 | 0.0175 ± 0.0637 | 0.895 | 0.32 | 0.3575 | 0.602 |
+| arima | 0.01502 ± 0.00477 | 0.5195 ± 0.0262 | 0.0129 ± 0.0649 | 0.936 | 0.50 | 0.2470 | 0.592 |
 | arima_garch | 0.01500 ± 0.00478 | 0.5285 ± 0.0232 | 0.0222 ± 0.0544 | 0.156 | 1.03 | 0.2330 | 0.181 |
-| ridge | 0.01506 ± 0.00475 | 0.5075 ± 0.0229 | 0.0070 ± 0.0477 | 0.449 | -0.12 | 0.4679 | 0.965 |
-| lstm | 0.01501 ± 0.00482 | 0.5214 ± 0.0272 | 0.0236 ± 0.0462 | 0.667 | 0.59 | 0.4730 | 0.165 |
+| ridge | 0.01506 ± 0.00475 | 0.5076 ± 0.0228 | 0.0070 ± 0.0477 | 0.449 | -0.12 | 0.4679 | 0.965 |
+| lstm | 0.01501 ± 0.00482 | 0.5214 ± 0.0272 | 0.0237 ± 0.0462 | 0.667 | 0.59 | 0.4730 | 0.165 |
 
 _RMSE, DirAcc and IC are means ± standard deviations across the 23 walk-forward folds. `DM p vs ZeroReturn` is the Diebold-Mariano p-value of the model's squared forecast errors against the zero_return baseline; a value above 0.05 means the difference is indistinguishable from noise. Net Sharpe, max drawdown and average turnover come from the cost-aware backtest. `zero_return` shows DirAcc 0.00 by construction, not because it is anti-predictive: it forecasts exactly zero, expressing no direction at all, and an exactly-zero forecast is scored as a miss rather than credited with a coin flip. Its IC is undefined for the same reason - a constant forecast has no rank correlation._
 
 ## Findings
 
-1. Per-fold directional accuracy: historical_mean above 0.50 in 21/23 folds (mean 0.529), closer to the truth than zero_return in 21/23 folds; arima above 0.50 in 18/23 folds (mean 0.518), closer to the truth than zero_return in 12/23 folds; arima_garch above 0.50 in 21/23 folds (mean 0.529), closer to the truth than zero_return in 17/23 folds; ridge above 0.50 in 13/23 folds (mean 0.508), closer to the truth than zero_return in 7/23 folds; lstm above 0.50 in 18/23 folds (mean 0.521), closer to the truth than zero_return in 16/23 folds.
-2. Diebold-Mariano vs ZeroReturn (squared loss): no model's forecast errors are distinguishable from the baseline at the 5% level - the smallest p-value is 0.156 (arima_garch). All p-values: historical_mean p=0.169, arima p=0.895, arima_garch p=0.156, ridge p=0.449, lstm p=0.667.
+1. Per-fold directional accuracy: historical_mean above 0.50 in 21/23 folds (mean 0.529), closer to the truth than zero_return in 21/23 folds; arima above 0.50 in 19/23 folds (mean 0.519), closer to the truth than zero_return in 11/23 folds; arima_garch above 0.50 in 21/23 folds (mean 0.529), closer to the truth than zero_return in 17/23 folds; ridge above 0.50 in 13/23 folds (mean 0.508), closer to the truth than zero_return in 7/23 folds; lstm above 0.50 in 18/23 folds (mean 0.521), closer to the truth than zero_return in 16/23 folds.
+2. Diebold-Mariano vs ZeroReturn (squared loss): no model's forecast errors are distinguishable from the baseline at the 5% level - the smallest p-value is 0.156 (arima_garch). All p-values: historical_mean p=0.169, arima p=0.936, arima_garch p=0.156, ridge p=0.449, lstm p=0.667.
 3. Best net Sharpe among the trading models: arima_garch at 1.03 (gross 1.18, a 0.15 give-up); average daily turnover of 0.18 at 5.0 bps costs roughly 228 bps of return per year; the do-nothing zero_return book scores 0.00; buy-and-hold over the same window scores 0.87. That P&L survives the cost drag. Whether any accuracy edge supports it is the bottom line's question.
-4. Mean information coefficient (Spearman) per model across folds: historical_mean +0.0191, arima +0.0175, arima_garch +0.0222, ridge +0.0070, lstm +0.0236. The strongest (lstm) has a fold-level t-statistic of 2.45 over 23 folds (p=0.023), i.e. distinguishable from zero at the 5% level. Read that p-value as an order of magnitude, not as inference: walk-forward folds share most of their training data so their ICs are not independent, and this is the best of 5 models, which biases it upward. The Diebold-Mariano tests on the daily series are the significance claims this report stands behind.
+4. Mean information coefficient (Spearman) per model across folds: historical_mean +0.0191, arima +0.0129, arima_garch +0.0222, ridge +0.0070, lstm +0.0237. The strongest (lstm) has a fold-level t-statistic of 2.45 over 23 folds (p=0.022), i.e. distinguishable from zero at the 5% level. Read that p-value as an order of magnitude, not as inference: walk-forward folds share most of their training data so their ICs are not independent, and this is the best of 5 models, which biases it upward. The Diebold-Mariano tests on the daily series are the significance claims this report stands behind.
 5. Bottom line: the best strategy (arima_garch) earns a net Sharpe of 1.03 after 5.0 bps of costs, but no model's forecast errors beat the ZeroReturn baseline, so that P&L is not supported by a measurable accuracy edge - on this evidence it is drift or luck, not skill. Treat it as unproven.
 
 ## Walk-forward folds
@@ -69,9 +69,9 @@ _RMSE, DirAcc and IC are means ± standard deviations across the 23 walk-forward
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | zero_return | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 2893 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 2893 |
 | historical_mean | 0.1384 | 0.1652 | 0.8377 | 1.1754 | 0.4337 | 0.0006 | 1 | 1.5883 | 2893 | 0.1383 | 0.1652 | 0.8373 | 1.1747 | 0.4337 | 0.0006 | 1 | 1.5875 | 2893 |
-| arima | 0.1204 | 0.138 | 0.8725 | 1.2586 | 0.2348 | 0.6021 | 1 | 1.3821 | 2893 | 0.0445 | 0.1381 | 0.3224 | 0.4552 | 0.3575 | 0.6021 | 1 | 0.5111 | 2893 |
+| arima | 0.145 | 0.1401 | 1.035 | 1.5218 | 0.2045 | 0.5915 | 1 | 1.6645 | 2893 | 0.0705 | 0.1402 | 0.5026 | 0.723 | 0.247 | 0.5915 | 1 | 0.8088 | 2893 |
 | arima_garch | 0.1807 | 0.1534 | 1.178 | 1.7195 | 0.2132 | 0.1812 | 1 | 2.0745 | 2893 | 0.1579 | 0.1534 | 1.0293 | 1.4911 | 0.233 | 0.1812 | 1 | 1.8123 | 2893 |
-| ridge | 0.1061 | 0.133 | 0.7983 | 1.2617 | 0.1927 | 0.9651 | 1 | 1.2185 | 2893 | -0.0155 | 0.133 | -0.1163 | -0.176 | 0.4679 | 0.9651 | 1 | -0.1775 | 2893 |
+| ridge | 0.1062 | 0.133 | 0.799 | 1.2629 | 0.1927 | 0.9651 | 1 | 1.2196 | 2893 | -0.0154 | 0.133 | -0.1155 | -0.1749 | 0.4679 | 0.9651 | 1 | -0.1764 | 2893 |
 | lstm | 0.1178 | 0.1651 | 0.7137 | 1.0065 | 0.4682 | 0.165 | 1 | 1.3525 | 2893 | 0.097 | 0.1651 | 0.5876 | 0.8259 | 0.473 | 0.165 | 1 | 1.1139 | 2893 |
 
 ## Figures
