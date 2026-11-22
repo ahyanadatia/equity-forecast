@@ -1,5 +1,9 @@
 # equity-forecast
 
+[![CI](https://github.com/ahyanadatia/stockpricepred/actions/workflows/ci.yml/badge.svg)](https://github.com/ahyanadatia/stockpricepred/actions/workflows/ci.yml)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 **Does the extra complexity of an LSTM buy anything over classical models and a naive baseline,
 once you evaluate honestly and account for transaction costs?**
 
