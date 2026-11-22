@@ -40,7 +40,7 @@ dev = [
 equity-forecast = "equity_forecast.cli:app"
 
 [project.urls]
-Repository = "https://github.com/ahyanadatia/stockpricepred"
+Repository = "https://github.com/ahyanadatia/equity-forecast"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/equity_forecast"]

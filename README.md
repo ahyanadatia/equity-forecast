@@ -53,7 +53,8 @@ How to read this:
   tomorrow's return better than "no change".
 - **Costs decide the ranking.** Ridge trades the most (0.97 average daily turnover) and ends
   with a negative net Sharpe (-0.12). ARIMA's gross Sharpe of 0.87 falls to 0.32 net at 0.60
-  turnover.
+  turnover. (ARIMA's backtest row is the least stable number in the table: see
+  [Reproducibility](#reproducibility).)
 - **The one apparent winner.** ARIMA-GARCH ends with the best net Sharpe (1.03, against 0.87
   for buy-and-hold) and the smallest drawdown among the profitable models (23%). Its forecast
   errors are still not distinguishable from the baseline's (p = 0.16), so the P&L is not
@@ -312,6 +313,13 @@ enabled, so bitwise reproducibility is a CPU guarantee; the pinned dependency is
 for that reason. And results are only comparable within a pinned dependency set —
 `requirements.lock` exists so that "same seed" also means "same BLAS, same TensorFlow, same
 `statsmodels` optimiser".
+
+A third limit showed up in practice. A second run of the same workflow on a different
+GitHub-hosted runner reproduced every other model's headline figures to two decimal places, but
+ARIMA's net Sharpe moved from 0.32 to 0.50. Its forecasts sit so close to zero that
+floating-point differences in the optimiser flip the sign of some positions, and a sign-based
+strategy turns that into a visibly different P&L. The conclusion does not depend on it: ARIMA's
+forecast errors are indistinguishable from the baseline in both runs (p = 0.89 and 0.94).
 
 ### Repository layout note
 
