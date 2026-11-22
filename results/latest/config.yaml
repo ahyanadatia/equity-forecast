@@ -1,18 +1,18 @@
 run:
   seed: 42
-  run_id: synthetic-efficient
+  run_id: real-market
 data:
   tickers:
-  - SIMA
-  - SIMB
-  - SIMC
-  - SIMD
-  - SIME
-  - SIMF
+  - AAPL
+  - JPM
+  - KO
+  - XOM
+  - MSFT
+  - PG
   start: '2010-01-01'
-  end: '2026-09-01'
-  cache_dir: data/synthetic
-  offline: true
+  end: null
+  cache_dir: data/raw
+  offline: false
   max_missing_frac: 0.02
   max_ffill_days: 1
 features:
@@ -73,10 +73,4 @@ report:
   output_dir: results
   latest_dir: results/latest
   make_plots: true
-  note: SIMULATED DATA - NOT A MARKET RESULT. Prices come from scripts/make_synthetic_universe.py,
-    not from Yahoo Finance, because the environment this package was built in had
-    no market-data egress. The data-generating process has GARCH(1,1) conditional
-    variance, Student-t(5) innovations and a common factor, but no exploitable predictability
-    in the conditional mean, so the expected result is that nothing beats the random-walk
-    baseline. See results/control/summary.md for the positive control that shows this
-    harness does detect signal when signal is present.
+  note: null

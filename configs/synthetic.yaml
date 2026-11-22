@@ -80,12 +80,11 @@ backtest:
 
 report:
   output_dir: "results"
-  latest_dir: "results/latest"
+  latest_dir: "results/null"
   make_plots: true
   note: >-
     SIMULATED DATA - NOT A MARKET RESULT. Prices come from scripts/make_synthetic_universe.py,
-    not from Yahoo Finance, because the environment this package was built in had no market-data
-    egress. The data-generating process has GARCH(1,1) conditional variance, Student-t(5)
+    not from Yahoo Finance. This is the null control. The data-generating process has GARCH(1,1) conditional variance, Student-t(5)
     innovations and a common factor, but no exploitable predictability in the conditional mean,
     so the expected result is that nothing beats the random-walk baseline. See
     results/control/summary.md for the positive control that shows this harness does detect

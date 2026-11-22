@@ -7,38 +7,72 @@
 **Does the extra complexity of an LSTM buy anything over classical models and a naive baseline,
 once you evaluate honestly and account for transaction costs?**
 
-**No — and neither does anything else here.** Across 23 walk-forward folds and six models
-(ZeroReturn, HistoricalMean, ARIMA, ARIMA-GARCH, Ridge, LSTM), forecasting one-day-ahead log
-returns, **not one model's forecast errors are distinguishable from a random walk's**
-(smallest Diebold-Mariano p = 0.10, Ridge). Directional accuracy clusters at 51%, information
-coefficients sit within noise of zero, and the strategies that do make money make it by holding
-a drifting market rather than by forecasting it: the best net Sharpe, 0.74, belongs to
-`historical_mean`, which trades on average 0.000 times a day and returns essentially what
-buy-and-hold returns (0.74). The LSTM is neither better nor worse than predicting zero
-(p = 0.98). A negative result, rigorously shown.
-
-> ### ⚠️ Read this before the numbers: these results are from a **simulated** market
->
-> The study is designed to run on real prices from Yahoo Finance. The environment this package
-> was built in blocked market-data egress (HTTP 403 on CONNECT to `query2.finance.yahoo.com`),
-> so the committed results come from `scripts/make_synthetic_universe.py` instead — six tickers
-> named `SIMA`–`SIMF` over 2010–2026, with GARCH(1,1) conditional variance, Student-t(5)
-> innovations and a common factor, but **no exploitable predictability planted in the
-> conditional mean**. The null result above is therefore a statement about that
-> data-generating process, *not* about US equities. Everything needed for the real study is in
-> place; one command produces it:
->
-> ```bash
-> equity-forecast run --config configs/default.yaml    # AAPL, JPM, KO, XOM, MSFT, PG
-> ```
+**No.** On six large US stocks (AAPL, JPM, KO, XOM, MSFT, PG), across 23 walk-forward folds from
+April 2015 to October 2026, forecasting one-day-ahead log returns with six models (ZeroReturn,
+HistoricalMean, ARIMA, ARIMA-GARCH, Ridge, LSTM), **no model's forecast errors are
+distinguishable from a random walk's** (smallest Diebold-Mariano p = 0.16, ARIMA-GARCH; the
+LSTM's is 0.67). Directional accuracy sits between 51% and 53%. One strategy does finish ahead of
+buy-and-hold after costs (ARIMA-GARCH, net Sharpe 1.03 against 0.87), but with no measurable
+accuracy edge behind it that is drift or luck rather than skill, and the report says so. The LSTM
+finishes behind buy-and-hold (net Sharpe 0.59).
 
 Because "no model found anything" is exactly what a *broken* harness also reports, the repo
-ships a **positive control** — see [below](#positive-control-the-harness-does-detect-signal).
+ships two control runs on simulated data: one with no signal planted, where the pipeline
+correctly finds nothing, and one with signal planted, where it finds it. See
+[Controls](#controls-the-harness-finds-signal-only-when-it-is-there).
 
 ## Headline results
 
-From [`results/latest/summary.md`](results/latest/summary.md) (run `synthetic-efficient`,
-23 folds, 6 tickers, 5 bps costs, seed 42):
+From [`results/latest/summary.md`](results/latest/summary.md) (run `real-market`: 23 folds,
+6 tickers, 5 bps costs, seed 42; split- and dividend-adjusted daily prices from Yahoo Finance,
+downloaded on 22 November 2026 by [`real-data.yml`](.github/workflows/real-data.yml)):
+
+| Model | RMSE (mean±std) | DirAcc (mean±std) | IC (mean±std) | DM p vs ZeroReturn | Net Sharpe | Max DD | Avg turnover |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| zero_return | 0.01502 ± 0.00480 | 0.0000 ± 0.0000 | n/a | n/a | 0.00 | 0.0000 | 0.000 |
+| historical_mean | 0.01500 ± 0.00481 | 0.5291 ± 0.0215 | 0.0191 ± 0.0436 | 0.169 | 0.84 | 0.4337 | 0.001 |
+| arima | 0.01502 ± 0.00478 | 0.5184 ± 0.0271 | 0.0175 ± 0.0637 | 0.895 | 0.32 | 0.3575 | 0.602 |
+| arima_garch | 0.01500 ± 0.00478 | 0.5285 ± 0.0232 | 0.0222 ± 0.0544 | 0.156 | 1.03 | 0.2330 | 0.181 |
+| ridge | 0.01506 ± 0.00475 | 0.5075 ± 0.0229 | 0.0070 ± 0.0477 | 0.449 | -0.12 | 0.4679 | 0.965 |
+| lstm | 0.01501 ± 0.00482 | 0.5214 ± 0.0272 | 0.0236 ± 0.0462 | 0.667 | 0.59 | 0.4730 | 0.165 |
+
+RMSE, DirAcc and IC are means ± standard deviations across the 23 walk-forward folds — no
+number is reported without its dispersion. `DM p vs ZeroReturn` is the Diebold-Mariano p-value
+against the random-walk baseline; **none clears 5%**. `zero_return` shows DirAcc 0.00 by
+construction rather than because it is anti-predictive: it forecasts exactly zero, expressing
+no direction at all, and an exactly-zero forecast is scored as a miss rather than credited with
+a coin flip. Its IC is undefined for the same reason.
+
+![Cumulative net P&L per model](results/latest/cumulative_pnl.png)
+
+![Per-fold directional accuracy](results/latest/dir_acc_box.png)
+
+How to read this:
+
+- **Accuracy.** Every model's RMSE is within 0.3% of the zero forecast's. Nothing here predicts
+  tomorrow's return better than "no change".
+- **Costs decide the ranking.** Ridge trades the most (0.97 average daily turnover) and ends
+  with a negative net Sharpe (-0.12). ARIMA's gross Sharpe of 0.87 falls to 0.32 net at 0.60
+  turnover.
+- **The one apparent winner.** ARIMA-GARCH ends with the best net Sharpe (1.03, against 0.87
+  for buy-and-hold) and the smallest drawdown among the profitable models (23%). Its forecast
+  errors are still not distinguishable from the baseline's (p = 0.16), so the P&L is not
+  evidence of forecasting skill.
+- **The LSTM.** It has the highest mean information coefficient (+0.024, fold-level t = 2.45),
+  but folds share most of their training data and this is the best of five models, so that
+  figure overstates the evidence. On the test this repo stands behind it is nowhere near
+  significant (p = 0.67), and it trails buy-and-hold after costs.
+
+## Controls: the harness finds signal only when it is there
+
+Both controls run the same pipeline, models and 23 folds over a simulated universe from
+`scripts/make_synthetic_universe.py`: six tickers named `SIMA`–`SIMF` over 2010–2026 with
+GARCH(1,1) conditional variance, Student-t(5) innovations and a common factor.
+
+### Null control: no signal planted, none found
+
+[`results/null/summary.md`](results/null/summary.md). No exploitable predictability is planted
+in the conditional mean, so the correct answer is that nothing beats the baseline:
 
 | Model | RMSE (mean±std) | DirAcc (mean±std) | IC (mean±std) | DM p vs ZeroReturn | Net Sharpe | Max DD | Avg turnover |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -49,24 +83,9 @@ From [`results/latest/summary.md`](results/latest/summary.md) (run `synthetic-ef
 | ridge | 0.01334 ± 0.00455 | 0.5046 ± 0.0222 | -0.0156 ± 0.0588 | 0.104 | -0.18 | 0.8981 | 0.778 |
 | lstm | 0.01330 ± 0.00449 | 0.5141 ± 0.0308 | 0.0026 ± 0.0409 | 0.975 | 0.60 | 0.3344 | 0.082 |
 
-RMSE, DirAcc and IC are means ± standard deviations across the 23 walk-forward folds — no
-number is reported without its dispersion. `DM p vs ZeroReturn` is the Diebold-Mariano p-value
-against the random-walk baseline; **every statistic behind these p-values is near zero and none
-clears 5%**. `zero_return` shows DirAcc 0.00 by construction rather than because it is
-anti-predictive: it forecasts exactly zero, expressing no direction at all, and an exactly-zero
-forecast is scored as a miss rather than credited with a coin flip. Its IC is undefined for the
-same reason.
+Smallest Diebold-Mariano p = 0.10 (Ridge); directional accuracy clusters at 51%.
 
-![Cumulative net P&L per model](results/latest/cumulative_pnl.png)
-
-![Per-fold directional accuracy](results/latest/dir_acc_box.png)
-
-The first figure is the honest picture of the result: the models that make money track the
-buy-and-hold line, and the ones that trade actively (Ridge, 0.78 daily turnover) bleed out
-through costs. The second shows every model's per-fold directional accuracy straddling the 0.50
-coin-flip line.
-
-## Positive control: the harness *does* detect signal
+### Positive control: signal planted, signal found
 
 A null result is only worth something if the machinery that produced it can find signal when
 signal exists. [`results/control/summary.md`](results/control/summary.md) is the same pipeline,
@@ -92,7 +111,7 @@ there is nothing there.
 
 ```bash
 python scripts/make_synthetic_universe.py
-equity-forecast run --config configs/synthetic.yaml         # the null result above
+equity-forecast run --config configs/synthetic.yaml         # the null control
 equity-forecast run --config configs/synthetic_signal.yaml  # the positive control
 ```
 
@@ -226,15 +245,11 @@ curve.
 
 These bound what the headline finding can be taken to mean.
 
-1. **The committed results are simulated, so they are a statement about a data-generating
-   process, not about markets.** This is the binding limitation and it subsumes several
-   others: a simulated universe has no earnings, no regime shifts driven by real events, no
-   microstructure and no crowding, and its "no predictability" property is true by construction
-   rather than discovered. What the run does establish is that the pipeline behaves correctly
-   at full scale on 23 folds, and — via the positive control — that it detects forecastable
-   structure when present. Running `configs/default.yaml` with network access replaces these
-   numbers with a real finding; nothing else in the repository has to change.
-2. **Survivorship and selection.** The intended universe is six large, currently-listed US names
+1. **One run on six stocks is a small experiment.** The headline is a statement about six
+   hand-picked large caps over one eleven-year window. It does not show that returns are
+   unforecastable in general, and with five models compared against the baseline, an apparent
+   winner such as ARIMA-GARCH's net Sharpe is what multiple comparisons produce by chance.
+2. **Survivorship and selection.** The universe is six large, currently-listed US names
    chosen by hand. They survived to 2026, and any strategy tested on them inherits that. A real
    study needs a point-in-time index membership file.
 3. **Daily close-to-close only.** No intraday data, so nothing here speaks to shorter horizons
@@ -262,15 +277,17 @@ equity-forecast smoke                                 # offline smoke run, ~1 mi
 equity-forecast run --config configs/default.yaml     # the real study; downloads and caches prices
 ```
 
-To reproduce the committed simulated results instead (no network needed):
+To reproduce the two control runs (no network needed):
 
 ```bash
 python scripts/make_synthetic_universe.py
-equity-forecast run --config configs/synthetic.yaml         # the null result
+equity-forecast run --config configs/synthetic.yaml         # the null control
 equity-forecast run --config configs/synthetic_signal.yaml  # the positive control
 ```
 
-Results land in `results/<run_id>/` and the headline artefacts are copied to `results/latest/`.
+Results land in `results/<run_id>/` and the headline artefacts are copied to the config's
+`latest_dir`: `results/latest/` for the real study, `results/null/` and `results/control/` for the
+controls.
 `equity-forecast report --run-id <id>` re-renders a previous run from disk,
 `equity-forecast run --models ridge,lstm` restricts the comparison, and
 `equity-forecast fetch --config <cfg>` populates the price cache without running anything.

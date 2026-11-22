@@ -79,7 +79,7 @@ backtest:
 
 report:
   output_dir: "results"
-  latest_dir: "results/latest"
+  latest_dir: "results/control"
   make_plots: true
   note: >-
     POSITIVE CONTROL ON SIMULATED DATA - NOT A MARKET RESULT. Identical to

@@ -1,20 +1,16 @@
 # results/latest
 
-The headline artefacts of the most recent full run - `summary.md` and the four figures the
-top-level README embeds. Alongside it, `results/control/` holds the positive-control run. These
-two directories are the only committed parts of `results/`; every other `results/<run_id>/`
-directory is a per-run output and is gitignored.
+The headline artefacts of the committed reference run: `summary.md` and the figures the
+top-level README embeds.
 
-**The run committed here is `synthetic-efficient`: SIMULATED data, not a market result.** The
-session that built this package had no egress to Yahoo Finance, so the reference results were
-produced from `scripts/make_synthetic_universe.py`. `summary.md` says so in a banner above its
-first number, and the tickers are named `SIMA`-`SIMF` so no output can be mistaken for a real
-security.
+**The run committed here is `real-market`:** AAPL, JPM, KO, XOM, MSFT and PG, evaluated from
+2015-04-08 to 2026-10-07 on split- and dividend-adjusted daily prices from Yahoo Finance. It was
+produced on a GitHub-hosted runner by `.github/workflows/real-data.yml`, which runs
+`equity-forecast run --config configs/default.yaml`.
 
-To replace these with a real study:
+Two control runs on simulated data sit alongside it:
 
-```bash
-equity-forecast run --config configs/default.yaml
-```
+- `results/null/`: no signal planted; the pipeline should find nothing, and does.
+- `results/control/`: an AR(1) signal planted; the pipeline should find it, and does.
 
-which writes `results/<run_id>/` and copies the summary and figures here.
+Every other `results/<run_id>/` directory is a per-run output and is gitignored.

@@ -31,6 +31,8 @@ results/*
 !results/latest/**
 !results/control/
 !results/control/**
+!results/null/
+!results/null/**
 
 # OS
 .DS_Store
