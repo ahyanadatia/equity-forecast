@@ -1,0 +1,68 @@
+name: Real-data run
+
+# Runs the full study on real prices and commits the report to the run branch.
+# Trigger it by pushing to run/real-data, or manually from the Actions tab.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["run/real-data"]
+
+permissions:
+  contents: write
+
+env:
+  PYTHONHASHSEED: "42"
+  TF_CPP_MIN_LOG_LEVEL: "3"
+  TF_ENABLE_ONEDNN_OPTS: "0"
+
+jobs:
+  study:
+    name: walk-forward study on market data
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            requirements.lock
+            pyproject.toml
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Create venv and install
+        run: |
+          uv venv --python 3.11
+          uv pip install -r requirements.lock
+          uv pip install --no-deps -e .
+
+      - name: Fetch prices (with retries)
+        run: |
+          for attempt in 1 2 3 4; do
+            if uv run --no-project equity-forecast fetch --config configs/default.yaml; then exit 0; fi
+            echo "fetch attempt $attempt failed; retrying in 45s"; sleep 45
+          done
+          exit 1
+
+      - name: Run the study
+        run: uv run --no-project equity-forecast run --config configs/default.yaml --run-id real-market
+
+      - name: Upload full run directory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-market-run
+          path: results/real-market/
+          if-no-files-found: ignore
+
+      - name: Commit the report to this branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f results/latest
+          git commit -m "Real-market run: report artefacts" || { echo "nothing to commit"; exit 0; }
+          git push origin "HEAD:${GITHUB_REF_NAME}"
