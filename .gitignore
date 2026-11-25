@@ -25,6 +25,8 @@ data/
 #   results/control/ - the positive-control run, which is the evidence that a
 #                      null result in results/latest/ is about the data and not
 #                      about the code
+#   results/regimes-default/, results/improved/ - the volatility-regime runs
+#                      described in the README
 # Everything else under results/ is a per-run output directory and is ignored.
 results/*
 !results/latest/
@@ -33,6 +35,10 @@ results/*
 !results/control/**
 !results/null/
 !results/null/**
+!results/regimes-default/
+!results/regimes-default/**
+!results/improved/
+!results/improved/**
 
 # OS
 .DS_Store
