@@ -355,7 +355,7 @@ Development:
 ```bash
 ruff check src tests scripts && ruff format --check src tests scripts
 mypy --strict src
-pytest -q          # 274 tests, ~50s, no network. `pytest -m ""` adds the slow end-to-end run.
+pytest -q          # 288 tests, ~1 min, no network. `pytest -m ""` adds the slow end-to-end run.
 ```
 
 ### Reproducibility
@@ -396,7 +396,7 @@ and KO, scored by RMSE and MAE of the predicted **price** on a single train/test
 | One train/test split | Walk-forward folds with an embargo | One split is one sample of the world; dispersion across folds is most of the story |
 | RMSE and MAE only | Directional accuracy, IC, hit rate, Diebold-Mariano, and a cost-aware backtest | Accuracy is not tradeability, and a difference without a significance test is an anecdote |
 | GARCH compared as a price model | GARCH forecasts variance, and feeds volatility targeting | GARCH is a variance model; comparing it on price RMSE is a category error |
-| Notebook only, no seeds, no tests | Installable package, CLI, YAML configs, fixed seeds, 275 tests, CI | A result you cannot re-run is not a result |
+| Notebook only, no seeds, no tests | Installable package, CLI, YAML configs, fixed seeds, 289 tests, CI | A result you cannot re-run is not a result |
 | No transaction costs | 5 bps per unit of turnover, gross and net both reported | A daily-rebalanced sign signal lives or dies on costs |
 
 The notebook that remains (`notebooks/01_results_walkthrough.ipynb`) only *reads* artefacts the
