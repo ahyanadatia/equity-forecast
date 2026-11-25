@@ -441,3 +441,53 @@ def test_invalid_price_panel_is_rejected() -> None:
         build_dataset(panel.drop(columns=["AAA"]), TINY_CFG)
     with pytest.raises(ValueError, match="duplicate dates"):
         build_dataset(pd.concat([panel, panel.iloc[-1:]]), TINY_CFG)
+
+
+# --------------------------------------------------------------------------- #
+# optional cross-sectional (market) features
+# --------------------------------------------------------------------------- #
+MARKET_CFG = FeatureConfig(
+    n_lags=2, roll_windows=(5, 21), drawdown_window=5, rvol_window=5, market_features=True
+)
+
+
+def test_market_features_add_the_documented_columns() -> None:
+    columns = feature_columns(MARKET_CFG)
+    for name in (
+        "mkt_ret_lag_1",
+        "mkt_ret_lag_5",
+        "mkt_rvol_5",
+        "rel_ret_lag_1",
+        "abs_ret_lag_1",
+        "vol_ratio",
+    ):
+        assert name in columns
+        assert name in continuous_feature_columns(MARKET_CFG)
+    assert "mkt_ret_lag_1" not in feature_columns(FeatureConfig())
+
+
+def test_market_features_known_answer(price_panel: pd.DataFrame) -> None:
+    dataset = build_dataset(price_panel, MARKET_CFG)
+    returns = np.log(price_panel).diff()
+    market = returns.mean(axis=1)
+    date = dates_of(dataset)[40]
+    previous = returns.index[returns.index.get_loc(date) - 1]
+    row = dataset.loc[(date, "SYNA")]
+    assert row["mkt_ret_lag_1"] == pytest.approx(market.loc[previous])
+    assert row["rel_ret_lag_1"] == pytest.approx(
+        returns.loc[previous, "SYNA"] - market.loc[previous]
+    )
+    assert row["abs_ret_lag_1"] == pytest.approx(abs(returns.loc[previous, "SYNA"]))
+
+
+@pytest.mark.parametrize("cut_position", [120, 300])
+def test_market_features_do_not_look_ahead(price_panel: pd.DataFrame, cut_position: int) -> None:
+    cut = price_panel.index[cut_position]
+    base = build_dataset(price_panel, MARKET_CFG)
+    mutated = price_panel.copy()
+    future = mutated.index > cut
+    mutated.loc[future] = mutated.loc[future].to_numpy() * 1.7
+    rebuilt = build_dataset(mutated, MARKET_CFG)
+    pd.testing.assert_frame_equal(
+        base[dates_of(base) <= cut], rebuilt[dates_of(rebuilt) <= cut], check_exact=True
+    )

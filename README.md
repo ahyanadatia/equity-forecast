@@ -14,7 +14,10 @@ distinguishable from a random walk's** (smallest Diebold-Mariano p = 0.16, ARIMA
 LSTM's is 0.67). Directional accuracy sits between 51% and 53%. One strategy does finish ahead of
 buy-and-hold after costs (ARIMA-GARCH, net Sharpe 1.03 against 0.87), but with no measurable
 accuracy edge behind it that is drift or luck rather than skill, and the report says so. The LSTM
-finishes behind buy-and-hold (net Sharpe 0.59).
+finishes behind buy-and-hold (net Sharpe 0.59). Splitting the test period by volatility doesn't
+change this: no model beats the zero forecast in calm, normal or volatile markets, and extra
+features plus in-fold tuning made the LSTM slightly worse
+([details](#does-anything-work-when-markets-are-volatile)).
 
 Because "no model found anything" is exactly what a *broken* harness also reports, the repo
 ships two control runs on simulated data: one with no signal planted, where the pipeline
@@ -63,6 +66,51 @@ How to read this:
   but folds share most of their training data and this is the best of five models, so that
   figure overstates the evidence. On the test this repo stands behind it is nowhere near
   significant (p = 0.67), and it trails buy-and-hold after costs.
+
+## Does anything work when markets are volatile?
+
+A full-sample score can hide a model that helps in turbulent markets and hurts in calm ones, so
+every run now also scores each model separately in low, mid and high volatility. A test day's
+regime comes from the average trailing 21-day volatility of the six stocks, which is known before
+the forecast is made, and the cut points are the terciles of that same measure over the fold's
+training period. So the labels never use the test data, and "high" means high relative to what
+the model was trained on. The per-regime Diebold-Mariano tests are Holm-corrected across all
+models and regimes.
+
+On the same data, folds and seed as the headline run
+([`results/regimes-default/summary.md`](results/regimes-default/summary.md); test days: 826 low,
+834 mid, 1,233 high):
+
+| Regime | Best RMSE vs ZeroReturn | LSTM RMSE vs ZeroReturn | LSTM DM p (Holm) | LSTM net Sharpe | Buy-and-hold net Sharpe |
+| --- | --- | --- | --- | --- | --- |
+| low | 0.9987 (lstm) | 0.9987 | 1.00 | 0.97 | 1.24 |
+| mid | 0.9984 (historical_mean) | 0.9989 | 1.00 | 0.87 | 1.45 |
+| high | 0.9984 (arima_garch) | 0.9999 | 1.00 | 0.48 | 0.67 |
+
+No model beats the zero forecast in any regime after correction. In high volatility the LSTM is
+essentially identical to the zero forecast (RMSE ratio 0.9999, raw p = 0.97) and trails
+buy-and-hold after costs. The only significant result in the table goes the wrong way: Ridge is
+worse than the zero forecast in mid volatility (Holm p = 0.006).
+
+### Trying to give the LSTM a better chance
+
+I also tried two changes aimed at the LSTM, fixed in
+[`configs/improved.yaml`](configs/improved.yaml) and committed before the run:
+
+- **Market features** (`features.market_features`): five lags of the equal-weight market return,
+  market volatility, the stock's return relative to the market, its absolute return, and a
+  short/long volatility ratio. All of them use data up to the previous close. Ridge gets them too.
+- **Tuning inside each fold** (`models.lstm.tune_grid`): four settings for units, sequence length
+  and dropout. Each fold trains all four on its training data and keeps the one with the lowest
+  loss on the last 15% of that training period. The test block isn't used for the choice.
+  The picks varied between folds (16 units/20 days in 10 folds, 64 units/60 days in 7).
+
+Result ([`results/improved/summary.md`](results/improved/summary.md)): the LSTM got slightly
+**worse**. Its overall DM statistic went from -0.43 (p = 0.67) to +1.32 (p = 0.19), positive
+meaning higher error than the zero forecast. Its net Sharpe fell from 0.59 to 0.19. In high
+volatility its RMSE is 0.28% above the zero forecast's (net Sharpe 0.05). Ridge changed very little
+(p = 0.91). The headline conclusion stays the same: with these inputs, none of these models
+forecast daily returns better than "no change", including in volatile periods.
 
 ## Controls: the harness finds signal only when it is there
 
@@ -258,16 +306,18 @@ These bound what the headline finding can be taken to mean.
 4. **No slippage or market-impact model.** Costs are a flat bps charge on turnover. Real
    execution of a daily-rebalanced long/short book would face spread, impact and borrow costs
    that scale with size.
-5. **No regime conditioning.** Models are fitted on whatever the training window contains, and
-   2010–2026 spans several very different volatility regimes. A model that works only in one of
-   them is averaged into mediocrity here.
+5. **Regimes are evaluated, not modelled.** Results are now broken down by volatility regime
+   (see above), but no model switches behaviour by regime, and the regime cut points are one
+   simple choice (terciles of trailing market volatility). Within a regime the test days are not
+   consecutive, so the Newey-West correction in the DM test is an approximation.
 6. **Small universe, few folds.** Cross-sectional averaging over six names, and per-fold
    dispersion estimated from a handful of folds whose training windows overlap heavily. Fold
    errors are therefore not independent, so a t-test across folds would overstate confidence;
    the significance claims in this repo come from Diebold-Mariano on the daily series, not from
    fold counts.
-7. **A fixed, small hyperparameter grid.** No extensive search, deliberately — searching hard
-   over a walk-forward test set is a good way to manufacture an edge that does not exist.
+7. **A small hyperparameter grid.** The improved run tunes the LSTM over four settings inside
+   each training fold; there is no bigger search, on purpose. Searching hard and then looking at
+   walk-forward test results is a good way to manufacture an edge that does not exist.
 8. **One asset class, one country, one frequency.**
 
 ## How to run
@@ -276,7 +326,14 @@ These bound what the headline finding can be taken to mean.
 uv venv --python 3.11 && uv pip install -r requirements.lock && uv pip install -e .
 equity-forecast smoke                                 # offline smoke run, ~1 min, uses committed fixtures
 equity-forecast run --config configs/default.yaml     # the real study; downloads and caches prices
+equity-forecast run --config configs/improved.yaml    # market features + in-fold LSTM tuning
 ```
+
+`results/regimes-default/` is `configs/default.yaml` re-run on 25 November 2026 with prices
+downloaded that day, written to a separate folder so `results/latest/` stays as published. Its
+numbers match `results/latest/` apart from ARIMA's row (see [Reproducibility](#reproducibility)).
+Both regime runs have `output_dir` set to a scratch folder in their saved `config.yaml`; that only
+changes where the full run directory was written.
 
 To reproduce the two control runs (no network needed):
 
@@ -298,7 +355,7 @@ Development:
 ```bash
 ruff check src tests scripts && ruff format --check src tests scripts
 mypy --strict src
-pytest -q          # 274 tests, ~50s, no network. `pytest -m ""` adds the slow end-to-end run.
+pytest -q          # 288 tests, ~1 min, no network. `pytest -m ""` adds the slow end-to-end run.
 ```
 
 ### Reproducibility
@@ -339,7 +396,7 @@ and KO, scored by RMSE and MAE of the predicted **price** on a single train/test
 | One train/test split | Walk-forward folds with an embargo | One split is one sample of the world; dispersion across folds is most of the story |
 | RMSE and MAE only | Directional accuracy, IC, hit rate, Diebold-Mariano, and a cost-aware backtest | Accuracy is not tradeability, and a difference without a significance test is an anecdote |
 | GARCH compared as a price model | GARCH forecasts variance, and feeds volatility targeting | GARCH is a variance model; comparing it on price RMSE is a category error |
-| Notebook only, no seeds, no tests | Installable package, CLI, YAML configs, fixed seeds, 275 tests, CI | A result you cannot re-run is not a result |
+| Notebook only, no seeds, no tests | Installable package, CLI, YAML configs, fixed seeds, 289 tests, CI | A result you cannot re-run is not a result |
 | No transaction costs | 5 bps per unit of turnover, gross and net both reported | A daily-rebalanced sign signal lives or dies on costs |
 
 The notebook that remains (`notebooks/01_results_walkthrough.ipynb`) only *reads* artefacts the

@@ -1135,6 +1135,65 @@ def _provenance_banner(artifacts: RunArtifactsLike) -> list[str]:
     return [f"> {body}", ""]
 
 
+def _regime_frame(artifacts: RunArtifactsLike) -> pd.DataFrame:
+    """Return the run's regime table, or an empty frame for runs that predate it."""
+    table = getattr(artifacts, "regime_metrics", None)
+    return table if isinstance(table, pd.DataFrame) else pd.DataFrame()
+
+
+def _regime_counts(artifacts: RunArtifactsLike) -> str:
+    """Describe how many test dates fell in each regime."""
+    labels = getattr(artifacts, "regime_labels", None)
+    if not isinstance(labels, pd.DataFrame) or labels.empty:
+        return ""
+    counts = labels.drop_duplicates("date")["regime"].value_counts()
+    parts = [f"{name} {int(counts.get(name, 0))}" for name in ("low", "mid", "high")]
+    return "Test dates per regime: " + ", ".join(parts) + "."
+
+
+def regime_findings(table: pd.DataFrame, baseline: str = BASELINE_MODEL) -> list[str]:
+    """Plain-language reading of the regime table, one sentence per regime.
+
+    A model is only described as beating the baseline in a regime when its
+    Holm-adjusted DM p-value is below :data:`SIGNIFICANCE_LEVEL` *and* its
+    statistic is negative (lower loss).
+
+    Args:
+        table: Output of :func:`equity_forecast.regimes.regime_metrics`.
+        baseline: The benchmark model's name.
+
+    Returns:
+        One sentence per regime present in ``table``.
+    """
+    sentences: list[str] = []
+    if table.empty:
+        return sentences
+    for regime in ("low", "mid", "high"):
+        block = table.loc[
+            (table["regime"] == regime) & ~table["model"].isin([baseline, "buy_and_hold"])
+        ]
+        if block.empty:
+            continue
+        p_holm = block["dm_p_holm"].astype("float64")
+        stat = block["dm_stat_vs_zero"].astype("float64")
+        winners = block.loc[(p_holm < SIGNIFICANCE_LEVEL) & (stat < 0.0), "model"].tolist()
+        losers = block.loc[(p_holm < SIGNIFICANCE_LEVEL) & (stat > 0.0), "model"].tolist()
+        ratio = block.set_index("model")["rmse_vs_zero"].astype("float64")
+        best = str(ratio.idxmin()) if ratio.notna().any() else "n/a"
+        text = f"**{regime} volatility:** "
+        if winners:
+            text += f"{_join_names(winners)} beat{'s' if len(winners) == 1 else ''} "
+            text += f"{baseline} after Holm correction"
+        else:
+            text += f"no model beats {baseline} after Holm correction"
+        if losers:
+            text += f"; {_join_names(losers)} significantly worse"
+        if best != "n/a":
+            text += f". Lowest error ratio: {best} ({ratio[best]:.4f} of {baseline}'s RMSE)."
+        sentences.append(text)
+    return sentences
+
+
 def render_summary_markdown(
     artifacts: RunArtifactsLike, *, figures: Sequence[str] | None = None
 ) -> str:
@@ -1188,6 +1247,23 @@ def render_summary_markdown(
         _markdown_table(_rounded(artifacts.backtest_summary, 4)),
         "",
     ]
+    regimes = _regime_frame(artifacts)
+    if not regimes.empty:
+        lines += [
+            "## Volatility regimes",
+            "",
+            "Each test date is labelled low / mid / high by the cross-sectional mean of "
+            "trailing realised volatility known before the forecast, against terciles of the "
+            "same signal over that fold's training dates (no look-ahead). "
+            "`rmse_vs_zero` below 1 means lower error than the baseline; `dm_p_holm` is the "
+            "DM p-value after Holm correction across every model and regime. "
+            + _regime_counts(artifacts),
+            "",
+            _markdown_table(_rounded(regimes, 4), include_index=False),
+            "",
+        ]
+        lines += [f"- {text}" for text in regime_findings(regimes)]
+        lines += [""]
     if names:
         lines += ["## Figures", ""]
         for name in names:
@@ -1281,6 +1357,12 @@ def write_report(
     _write_parquet(artifacts.pnl, run_dir / "pnl.parquet")
     _write_parquet(artifacts.buy_and_hold, run_dir / BENCHMARK_FILE)
     _write_config(artifacts.config, run_dir / "config.yaml")
+    regimes = _regime_frame(artifacts)
+    if not regimes.empty:
+        _write_csv(regimes, run_dir / "regime_metrics.csv")
+        labels = getattr(artifacts, "regime_labels", None)
+        if isinstance(labels, pd.DataFrame) and not labels.empty:
+            _write_csv(labels, run_dir / "regime_labels.csv")
 
     figures = make_plots(artifacts, run_dir) if report_cfg.make_plots else []
     summary = render_summary_markdown(artifacts, figures=[path.name for path in figures])
@@ -1316,6 +1398,8 @@ class _LoadedRun:
     pnl: pd.DataFrame
     buy_and_hold: pd.DataFrame
     backtests: dict[str, BacktestResult] = field(default_factory=dict)
+    regime_labels: pd.DataFrame = field(default_factory=pd.DataFrame)
+    regime_metrics: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def _read_csv(path: Path) -> pd.DataFrame:
@@ -1351,6 +1435,11 @@ def _folds_from_table(table: pd.DataFrame) -> list[Fold]:
     ]
 
 
+def _read_optional_csv(path: Path) -> pd.DataFrame:
+    """Read a CSV that older runs did not write; missing means empty."""
+    return _read_csv(path) if path.exists() else pd.DataFrame()
+
+
 def load_run(run_dir: Path) -> RunArtifactsLike:
     """Read a finished run back from the directory :func:`write_report` wrote.
 
@@ -1384,6 +1473,8 @@ def load_run(run_dir: Path) -> RunArtifactsLike:
         backtest_summary=_read_csv(run_dir / "backtest_summary.csv"),
         pnl=_read_parquet(run_dir / "pnl.parquet"),
         buy_and_hold=_read_parquet(run_dir / BENCHMARK_FILE),
+        regime_labels=_read_optional_csv(run_dir / "regime_labels.csv"),
+        regime_metrics=_read_optional_csv(run_dir / "regime_metrics.csv"),
     )
 
 

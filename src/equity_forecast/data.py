@@ -444,7 +444,7 @@ def align_calendar(
     if not fully_populated.any():  # pragma: no cover - defensive
         msg = f"the surviving tickers {keep} have no date on which all of them have a price"
         raise ValueError(msg)
-    out = out.iloc[int(fully_populated.argmax()) :]
+    out = out.iloc[fully_populated.tolist().index(True) :]
 
     out.index = pd.DatetimeIndex(out.index, name="date")
     out.columns = pd.Index(keep, name="ticker")

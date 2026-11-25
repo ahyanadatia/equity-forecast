@@ -82,6 +82,7 @@ from equity_forecast.metrics import (
     rmse,
 )
 from equity_forecast.models.base import build_model
+from equity_forecast.regimes import label_regimes, market_vol_signal, regime_metrics
 from equity_forecast.seeding import set_global_seeds
 from equity_forecast.splits import Fold, describe_folds, fold_masks, generate_folds, window_mask
 
@@ -182,6 +183,10 @@ class RunArtifacts:
         dm_table: Per-``(model, ticker)`` Diebold-Mariano results against the
             baseline, where ``ticker == "ALL"`` is the cross-sectional headline
             test described in the module docstring.
+        regime_labels: One row per ``(fold, test date)`` with its volatility
+            regime; see :mod:`equity_forecast.regimes`.
+        regime_metrics: Per-``(regime, model)`` accuracy, DM test and backtest
+            statistics; see :func:`equity_forecast.regimes.regime_metrics`.
     """
 
     run_id: str
@@ -196,6 +201,8 @@ class RunArtifacts:
     pnl: pd.DataFrame
     buy_and_hold: pd.DataFrame
     dm_table: pd.DataFrame = field(default_factory=pd.DataFrame)
+    regime_labels: pd.DataFrame = field(default_factory=pd.DataFrame)
+    regime_metrics: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 # --------------------------------------------------------------------------- #
@@ -831,6 +838,20 @@ def run_experiment(
 
     backtests, backtest_summary, pnl, benchmark = _run_backtests(forecasts, model_names, cfg)
 
+    # Regime labels use the UNSCALED trailing-vol feature and per-fold training cut points.
+    signal = market_vol_signal(dataset, f"rvol_{cfg.features.rvol_window}")
+    regime_labels = label_regimes(signal, folds)
+    regimes = regime_metrics(
+        forecasts,
+        regime_labels,
+        pnl,
+        model_names,
+        baseline=BASELINE_MODEL,
+        horizon=cfg.features.horizon,
+        ann_factor=cfg.backtest.ann_factor,
+        benchmark_net=benchmark["net"] if "net" in benchmark.columns else None,
+    )
+
     return RunArtifacts(
         run_id=run_id,
         config=cfg,
@@ -844,4 +865,6 @@ def run_experiment(
         pnl=pnl,
         buy_and_hold=benchmark,
         dm_table=dm,
+        regime_labels=regime_labels,
+        regime_metrics=regimes,
     )

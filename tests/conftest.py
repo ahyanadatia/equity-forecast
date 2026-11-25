@@ -9,11 +9,48 @@ the feature pipeline.
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
+
+HAS_TENSORFLOW = importlib.util.find_spec("tensorflow") is not None
+"""Whether the optional ``lstm`` extra is installed."""
+
+
+def _tensorflow_importable() -> bool:
+    """Return True only if TensorFlow actually imports, not just exists on the path."""
+    if not HAS_TENSORFLOW:
+        return False
+    try:
+        import tensorflow  # noqa: F401, PLC0415
+    except ImportError:
+        return False
+    return True
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Skip LSTM tests cleanly when TensorFlow is not installed.
+
+    A test needs TensorFlow if it is marked ``requires_tf``, lives in
+    ``test_lstm.py``, or is a ``[lstm]`` parametrisation of a model contract test.
+    """
+    del config
+    needs_tf = [
+        item
+        for item in items
+        if item.get_closest_marker("requires_tf") is not None
+        or item.path.name == "test_lstm.py"
+        or "[lstm]" in item.nodeid
+    ]
+    if not needs_tf or _tensorflow_importable():
+        return
+    skip = pytest.mark.skip(reason="TensorFlow not installed (pip install -e '.[lstm]')")
+    for item in needs_tf:
+        item.add_marker(skip)
+
 
 FIXTURE_PRICES = Path(__file__).resolve().parent / "fixtures" / "prices"
 

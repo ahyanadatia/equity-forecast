@@ -38,6 +38,13 @@ ticker that was never seen during training, which is what makes the model safe t
 call on a window containing a new name. Setting ``pooled=False`` fits one
 independent network per ticker instead.
 
+*Tuning stays inside the fold.* When ``tune_grid`` is set, every candidate is
+trained on the fold's training rows with the same chronological early-stopping
+split, and the one with the lowest best validation loss is kept. Selection
+therefore sees only data dated inside the training window; the embargo gap and
+the test block play no part, so the walk-forward score of the tuned model is
+still an out-of-sample score.
+
 *Determinism.* :func:`equity_forecast.seeding.set_global_seeds` is called at the
 top of :meth:`LstmForecaster.fit`, every initializer and dropout layer carries an
 explicit seed, and ``model.fit`` runs with ``shuffle=False``. Two fits on the same
@@ -47,7 +54,9 @@ data with the same seed produce bitwise-identical forecasts.
 from __future__ import annotations
 
 import logging
-from typing import Any
+import math
+from dataclasses import replace
+from typing import Any, Final
 
 import numpy as np
 import numpy.typing as npt
@@ -243,6 +252,12 @@ def _window_sequences(
     return np.concatenate(seq_blocks, axis=0), np.concatenate(pos_blocks, axis=0)
 
 
+TUNABLE_KEYS: Final[frozenset[str]] = frozenset(
+    {"sequence_length", "n_layers", "units", "dropout", "learning_rate", "embedding_dim"}
+)
+"""Hyperparameters a ``tune_grid`` candidate may override."""
+
+
 @register_model("lstm")
 class LstmForecaster(BaseForecaster):
     """Keras LSTM over the last ``sequence_length`` feature rows of each ticker.
@@ -272,7 +287,21 @@ class LstmForecaster(BaseForecaster):
         self._target_mean: float = 0.0
         self._target_std: float = 1.0
         self._val_dates: pd.DatetimeIndex = pd.DatetimeIndex([])
+        self._val_losses: list[float] = []
+        self.selected_params: dict[str, Any] = {}
+        self.tuning_scores: list[tuple[dict[str, Any], float]] = []
         self._fitted = False
+        for candidate in params.tune_grid:
+            unknown = set(candidate) - TUNABLE_KEYS
+            if unknown:
+                msg = f"lstm.tune_grid candidate has untunable key(s) {sorted(unknown)}"
+                raise ValueError(msg)
+
+    @property
+    def validation_loss(self) -> float:
+        """Mean best validation loss over the fitted networks (``NaN`` if none)."""
+        finite = [v for v in self._val_losses if math.isfinite(v)]
+        return float(np.mean(finite)) if finite else float("nan")
 
     # ----------------------------------------------------------------- fitting
 
@@ -291,8 +320,11 @@ class LstmForecaster(BaseForecaster):
                 line up with ``x``.
             KeyError: If ``x`` is not indexed by ``(date, ticker)``.
         """
+        if self.params.tune_grid:
+            return self._fit_tuned(x, y)
         set_global_seeds(self.seed)
         self._validate_training_frame(x, y)
+        self._val_losses = []
 
         self._columns = [str(c) for c in x.columns]
         self._impute = _column_means(np.asarray(x.to_numpy(dtype="float64"), dtype="float64"))
@@ -341,6 +373,52 @@ class LstmForecaster(BaseForecaster):
         else:
             self._fit_per_ticker(sequences, positions, scaled_target, tickers, is_val)
         return self
+
+    def _fit_tuned(self, x: pd.DataFrame, y: pd.Series) -> LstmForecaster:
+        """Fit every ``tune_grid`` candidate and keep the best on validation loss.
+
+        Each candidate is a fresh forecaster with the same seed, trained on the
+        same training rows with the same chronological validation block, so the
+        comparison is like for like and never touches data after the fold's
+        training end. Ties and all-``NaN`` scores fall back to the first candidate.
+
+        Args:
+            x: Scaled training feature frame indexed by ``(date, ticker)``.
+            y: Training targets, aligned row-for-row with ``x``.
+
+        Returns:
+            ``self``, carrying the winning candidate's networks and parameters.
+        """
+        self._validate_training_frame(x, y)
+        best: LstmForecaster | None = None
+        best_override: dict[str, Any] = {}
+        best_loss = math.inf
+        scores: list[tuple[dict[str, Any], float]] = []
+        for override in self.params.tune_grid:
+            candidate = LstmForecaster(replace(self.params, tune_grid=(), **override), self.seed)
+            candidate.fit(x, y)
+            loss = candidate.validation_loss
+            scores.append((dict(override), loss))
+            LOGGER.info("lstm tuning: %s -> validation loss %.6f", override, loss)
+            if best is None or (math.isfinite(loss) and loss < best_loss):
+                best, best_override = candidate, dict(override)
+                best_loss = loss if math.isfinite(loss) else math.inf
+        if best is None:  # pragma: no cover - tune_grid is non-empty here
+            msg = "lstm tuning produced no candidate"
+            raise RuntimeError(msg)
+        tuned_params = self.params
+        self.__dict__.update(best.__dict__)
+        self.params = tuned_params
+        self.selected_params = best_override
+        self.tuning_scores = scores
+        LOGGER.info("lstm tuning: selected %s", best_override)
+        return self
+
+    def _active_params(self) -> LstmConfig:
+        """The parameters the fitted networks were built with."""
+        if self.selected_params:
+            return replace(self.params, tune_grid=(), **self.selected_params)
+        return self.params
 
     def _validate_training_frame(self, x: pd.DataFrame, y: pd.Series) -> None:
         """Reject training input the model cannot use.
@@ -599,7 +677,7 @@ class LstmForecaster(BaseForecaster):
         else:
             LOGGER.debug("lstm.fit(): no validation sequences for %s; early stopping is off", label)
 
-        model.fit(
+        history = model.fit(
             _take(inputs, train_mask),
             targets[train_mask],
             validation_data=validation_data,
@@ -609,6 +687,8 @@ class LstmForecaster(BaseForecaster):
             callbacks=callbacks,
             verbose=0,
         )
+        val_history = getattr(history, "history", {}).get("val_loss", [])
+        self._val_losses.append(float(min(val_history)) if val_history else float("nan"))
 
     # -------------------------------------------------------------- prediction
 
@@ -642,7 +722,7 @@ class LstmForecaster(BaseForecaster):
         )
 
         if self._pooled_model is not None or self._models:
-            length = max(int(self.params.sequence_length), 1)
+            length = max(int(self._active_params().sequence_length), 1)
             matrix = _imputed_matrix(x, self._columns, self._impute)
             sequences, positions = _window_sequences(matrix, tickers, dates, length)
             if sequences.shape[0]:
