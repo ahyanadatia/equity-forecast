@@ -476,6 +476,7 @@ def _repo_cwd(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 @pytest.mark.slow
 @pytest.mark.usefixtures("_repo_cwd")
 @pytest.mark.slow
+@pytest.mark.requires_tf
 def test_cli_smoke_runs_every_model_end_to_end(runner: CliRunner, tmp_path: Path) -> None:
     result = runner.invoke(app, ["smoke", "--results-dir", str(tmp_path / "results")])
     assert result.exit_code == 0, result.output

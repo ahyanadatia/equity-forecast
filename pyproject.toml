@@ -128,5 +128,6 @@ filterwarnings = [
     "ignore::UserWarning",
 ]
 markers = [
+    "requires_tf: needs TensorFlow (the optional `lstm` extra); skipped when it is not installed.",
     "slow: end-to-end runs that duplicate the CI smoke step. Excluded from the default\n    invocation so the developer loop stays under a minute; CI runs them with `-m ''`.",
 ]
