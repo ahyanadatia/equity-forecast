@@ -368,3 +368,45 @@ def test_predictions_are_on_the_scale_of_the_target(
     target_std = float(targets.std(ddof=1))
     assert float(predictions.std(ddof=1)) < 3.0 * target_std
     assert float(predictions.abs().max()) < 10.0 * target_std
+
+
+# --------------------------------------------------------------------------- #
+# in-fold hyperparameter tuning
+# --------------------------------------------------------------------------- #
+
+
+def test_tuning_picks_the_lowest_validation_loss_and_predicts_with_it(
+    window: pd.DataFrame, targets: pd.Series, train_mask: np.ndarray
+) -> None:
+    grid = ({"units": 2}, {"units": 4, "sequence_length": 8})
+    model = LstmForecaster(tiny_config(tune_grid=grid), seed=0)
+    model.fit(window[train_mask], targets[train_mask])
+
+    assert [override for override, _ in model.tuning_scores] == list(grid)
+    losses = [loss for _, loss in model.tuning_scores]
+    assert all(np.isfinite(losses))
+    assert model.selected_params == grid[int(np.argmin(losses))]
+
+    prediction = model.predict(window)
+    assert prediction.index.equals(window.index)
+    assert np.isfinite(prediction.to_numpy()).all()
+
+
+def test_tuning_only_ever_sees_the_training_rows(
+    window: pd.DataFrame, targets: pd.Series, train_mask: np.ndarray
+) -> None:
+    # Scrambling the targets after the training block must not change the choice.
+    grid = ({"units": 2}, {"units": 4})
+    scrambled = targets.copy()
+    scrambled[~train_mask] = scrambled[~train_mask].to_numpy()[::-1] * 50.0
+    first = LstmForecaster(tiny_config(tune_grid=grid), seed=0)
+    first.fit(window[train_mask], targets[train_mask])
+    second = LstmForecaster(tiny_config(tune_grid=grid), seed=0)
+    second.fit(window[train_mask], scrambled[train_mask])
+    assert first.tuning_scores == second.tuning_scores
+    assert first.selected_params == second.selected_params
+
+
+def test_untunable_grid_keys_are_rejected() -> None:
+    with pytest.raises(ValueError, match="untunable"):
+        LstmForecaster(tiny_config(tune_grid=({"epochs": 3},)), seed=0)

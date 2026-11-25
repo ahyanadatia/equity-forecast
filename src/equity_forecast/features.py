@@ -99,12 +99,25 @@ DAY_OF_WEEK_COLUMNS: Final[tuple[str, ...]] = (
 )
 """One-hot weekday columns, in Monday-to-Friday order."""
 
+MARKET_LAGS: Final[int] = 5
+"""Lags of the equal-weight market return added when ``market_features`` is on."""
+
 TARGET_COLUMNS: Final[tuple[str, ...]] = ("y", "ret_1d")
 """Non-feature columns appended after the features, in order."""
 
 FEATURE_SPLIT: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
     {
-        "continuous": ("ret_lag_", "roll_mean_", "roll_std_", "max_dd_", "rvol_"),
+        "continuous": (
+            "ret_lag_",
+            "roll_mean_",
+            "roll_std_",
+            "max_dd_",
+            "rvol_",
+            "mkt_",
+            "rel_ret_",
+            "abs_ret_",
+            "vol_ratio",
+        ),
         "binary": ("dow_",),
     }
 )
@@ -171,6 +184,13 @@ def feature_columns(cfg: FeatureConfig) -> list[str]:
         columns.append(f"roll_std_{window}")
     columns.append(f"max_dd_{cfg.drawdown_window}")
     columns.append(f"rvol_{cfg.rvol_window}")
+    if cfg.market_features:
+        columns.extend(f"mkt_ret_lag_{k}" for k in range(1, MARKET_LAGS + 1))
+        columns.append(f"mkt_rvol_{cfg.rvol_window}")
+        columns.append("rel_ret_lag_1")
+        columns.append("abs_ret_lag_1")
+        if len(cfg.roll_windows) >= 2:
+            columns.append("vol_ratio")
     if cfg.include_day_of_week:
         columns.extend(DAY_OF_WEEK_COLUMNS)
     return columns
@@ -289,7 +309,39 @@ def _day_of_week_columns(index: pd.DatetimeIndex) -> dict[str, pd.Series]:
     }
 
 
-def _ticker_block(returns: pd.Series, cfg: FeatureConfig) -> pd.DataFrame:
+def _market_columns(
+    returns: pd.Series, market: pd.Series, cfg: FeatureConfig
+) -> dict[str, pd.Series]:
+    """Cross-sectional context features for one ticker, all known at ``t - 1``.
+
+    Args:
+        returns: Daily log returns for the ticker.
+        market: Equal-weight mean log return of the whole panel on each date.
+        cfg: Feature configuration.
+
+    Returns:
+        The ``mkt_*``, ``rel_ret_lag_1``, ``abs_ret_lag_1`` and ``vol_ratio``
+        columns, each shifted at least one day.
+    """
+    columns: dict[str, pd.Series] = {}
+    for lag in range(1, MARKET_LAGS + 1):
+        columns[f"mkt_ret_lag_{lag}"] = market.shift(lag)
+    market_ms = market.pow(2).rolling(cfg.rvol_window).mean()
+    columns[f"mkt_rvol_{cfg.rvol_window}"] = np.sqrt(TRADING_DAYS_PER_YEAR * market_ms).shift(1)
+    columns["rel_ret_lag_1"] = (returns - market).shift(1)
+    columns["abs_ret_lag_1"] = returns.abs().shift(1)
+    if len(cfg.roll_windows) >= 2:
+        short, long = min(cfg.roll_windows), max(cfg.roll_windows)
+        short_std = returns.rolling(short).std(ddof=1)
+        long_std = returns.rolling(long).std(ddof=1)
+        ratio = short_std / long_std.where(long_std > _MIN_STD)
+        columns["vol_ratio"] = ratio.shift(1)
+    return columns
+
+
+def _ticker_block(
+    returns: pd.Series, cfg: FeatureConfig, market: pd.Series | None = None
+) -> pd.DataFrame:
     """Build the feature/target block for a single ticker.
 
     Every rolling statistic is computed on ``returns`` and then shifted forward
@@ -298,6 +350,8 @@ def _ticker_block(returns: pd.Series, cfg: FeatureConfig) -> pd.DataFrame:
     Args:
         returns: Daily log returns for one ticker, indexed by date.
         cfg: Feature configuration.
+        market: Equal-weight market return per date; required when
+            ``cfg.market_features`` is on.
 
     Returns:
         A date-indexed frame with the feature columns followed by ``y`` and
@@ -317,6 +371,11 @@ def _ticker_block(returns: pd.Series, cfg: FeatureConfig) -> pd.DataFrame:
     mean_square = returns.pow(2).rolling(cfg.rvol_window).mean()
     rvol: pd.Series = np.sqrt(TRADING_DAYS_PER_YEAR * mean_square)
     columns[f"rvol_{cfg.rvol_window}"] = rvol.shift(1)
+    if cfg.market_features:
+        if market is None:
+            msg = "market_features needs the panel's market return"
+            raise ValueError(msg)
+        columns.update(_market_columns(returns, market, cfg))
     if cfg.include_day_of_week:
         index = returns.index
         if not isinstance(index, pd.DatetimeIndex):  # pragma: no cover - guarded upstream
@@ -333,8 +392,10 @@ def _ticker_block(returns: pd.Series, cfg: FeatureConfig) -> pd.DataFrame:
 def build_dataset(prices: pd.DataFrame, cfg: FeatureConfig) -> pd.DataFrame:
     """Build the long modelling dataset from a wide price panel.
 
-    Each ticker is processed independently - no rolling statistic ever spans two
-    tickers - and the row dated ``t`` is the row whose target is realised on
+    Each ticker is processed independently - no per-ticker rolling statistic ever
+    spans two tickers; the optional ``market_features`` are the one deliberate
+    exception, built from the same-date cross-sectional mean return and shifted
+    like everything else - and the row dated ``t`` is the row whose target is realised on
     ``t``, carrying features known at the close of ``t - 1``.
 
     Args:
@@ -357,11 +418,13 @@ def build_dataset(prices: pd.DataFrame, cfg: FeatureConfig) -> pd.DataFrame:
         np.log(panel.to_numpy(dtype=np.float64)), index=panel.index, columns=panel.columns
     )
     returns = log_prices.diff()
+    # Same-date mean across tickers; every feature built from it is shifted >= 1 day.
+    market = returns.mean(axis=1, skipna=True)
 
     blocks: list[pd.DataFrame] = []
     for position, label in enumerate(panel.columns):
         ticker = str(label)
-        block = _ticker_block(returns.iloc[:, position], cfg)
+        block = _ticker_block(returns.iloc[:, position], cfg, market)
         block.index = pd.MultiIndex.from_product([block.index, [ticker]], names=["date", "ticker"])
         blocks.append(block)
 

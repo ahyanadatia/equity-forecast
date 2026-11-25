@@ -64,6 +64,11 @@ class FeatureConfig:
     drawdown_window: int = 21
     rvol_window: int = 21
     include_day_of_week: bool = True
+    market_features: bool = False
+    """Add cross-sectional context: lagged equal-weight market returns, market
+    volatility, the ticker's lagged return relative to the market, its lagged
+    absolute return and a short/long volatility ratio. Off by default so older
+    configs reproduce their published runs exactly."""
 
 
 @dataclass(frozen=True)
@@ -130,6 +135,11 @@ class LstmConfig:
     val_frac: float = 0.15
     pooled: bool = True
     embedding_dim: int = 4
+    tune_grid: tuple[dict[str, Any], ...] = ()
+    """Candidate overrides (e.g. ``{units: 64, sequence_length: 60}``) tried inside
+    each training fold. The candidate with the lowest loss on the fold's own
+    chronological validation block is kept; the test block is never consulted.
+    Empty means no tuning."""
 
 
 @dataclass(frozen=True)
@@ -184,7 +194,7 @@ class Config:
     report: ReportConfig = field(default_factory=ReportConfig)
 
 
-_TUPLE_FIELDS = {"tickers", "roll_windows", "order"}
+_TUPLE_FIELDS = {"tickers", "roll_windows", "order", "tune_grid"}
 
 
 def _build(cls: type[T], raw: object, path: str) -> T:
